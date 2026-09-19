@@ -3,6 +3,8 @@
 // Package pangolin talks to a Pangolin instance's Integration API.
 package pangolin
 
+import "encoding/json"
+
 // Resource modes. Pangolin also accepts a deprecated "protocol" key carrying the
 // same values; this client only ever sends "mode".
 const (
@@ -12,6 +14,25 @@ const (
 // Target methods, the scheme Pangolin uses to reach a backend.
 const (
 	MethodHTTP = "http"
+)
+
+// Rule actions. Pangolin evaluates rules before any authentication: "allow"
+// returns immediately and bypasses SSO, "deny" blocks, and "pass" falls through
+// to the authentication checks — the same as no rule matching at all.
+const (
+	ActionAllow = "allow"
+	ActionDeny  = "deny"
+	ActionPass  = "pass"
+)
+
+// Rule match types. Rationale: docs/access-rules.md.
+const (
+	MatchCIDR    = "cidr"
+	MatchPath    = "path"
+	MatchIP      = "ip"
+	MatchCountry = "country"
+	MatchASN     = "asn"
+	MatchRegion  = "region"
 )
 
 // Blueprint is the desired-state document sent to the Integration API. Only the
@@ -27,6 +48,33 @@ type PublicResource struct {
 	FullDomain string   `json:"full-domain,omitempty"`
 	Auth       *Auth    `json:"auth,omitempty"`
 	Targets    []Target `json:"targets,omitempty"`
+
+	// Never omitted. Pangolin switches rule evaluation on for a resource whose
+	// rules array is non-empty and off when it is empty, but leaves the setting
+	// untouched when the key is absent — so an absent key would keep evaluating
+	// the rules of a route whose last rule was just removed.
+	Rules Rules `json:"rules"`
+}
+
+// Rule is one access rule. Pangolin's schema also takes priority and enabled;
+// neither is sent, because the order of this slice is the priority and a rule
+// that should not apply is removed rather than disabled.
+type Rule struct {
+	Action string `json:"action"`
+	Match  string `json:"match"`
+	Value  string `json:"value"`
+}
+
+// Rules marshals to an empty array rather than null when unset. Pangolin's
+// schema takes an array or nothing, never null, so a nil slice encoded the
+// usual way would fail the entire apply.
+type Rules []Rule
+
+func (r Rules) MarshalJSON() ([]byte, error) {
+	if r == nil {
+		return []byte("[]"), nil
+	}
+	return json.Marshal([]Rule(r))
 }
 
 type Auth struct {

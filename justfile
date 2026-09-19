@@ -215,12 +215,19 @@ deploy: images-local cluster-up
     kubectl --context k3d-{{cluster}} create namespace {{namespace}} \
         --dry-run=client -o yaml | kubectl --context k3d-{{cluster}} apply -f -
     kubectl --context k3d-{{cluster}} -n {{namespace}} apply -f test/pangolinfake/deploy.yaml
+    # Same reason as the chart's stamp below: the manifest and the image tag are
+    # identical every time, so without this the fake keeps running the code it
+    # was first created with and changes to it are never tested.
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    kubectl --context k3d-{{cluster}} -n {{namespace}} patch deployment/pangolin-fake \
+        --type merge -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"deployedAt\":\"$stamp\"}}}}}"
     kubectl --context k3d-{{cluster}} -n {{namespace}} rollout status deployment/pangolin-fake --timeout 2m
     kubectl --context k3d-{{cluster}} -n {{namespace}} create secret generic pangolin-api-key \
         --from-literal=apiKey=test_id.test_secret \
         --dry-run=client -o yaml | kubectl --context k3d-{{cluster}} -n {{namespace}} apply -f -
     # The image tag never changes, so the pod template needs a per-deploy stamp:
     # otherwise the Deployment is byte-identical and Kubernetes rolls nothing.
+    # The fake gets the same treatment above.
     helm upgrade --install pangolin-gateway {{chart}} \
         --kube-context k3d-{{cluster}} \
         --namespace {{namespace}} --create-namespace \
@@ -230,7 +237,7 @@ deploy: images-local cluster-up
         --set pangolin.org=test-org \
         --set pangolin.defaultSite=test-site \
         --set pangolin.apiKeySecret.name=pangolin-api-key \
-        --set-string podAnnotations.deployedAt="$(date -u +%Y%m%dT%H%M%SZ)" \
+        --set-string podAnnotations.deployedAt="$stamp" \
         --wait --timeout 3m
     kubectl --context k3d-{{cluster}} -n {{namespace}} \
         rollout status deployment/pangolin-gateway --timeout 3m

@@ -121,6 +121,58 @@ resource can keep the name people already recognise.
 publish a service unprotected. A value that is neither `"true"` nor `"false"` is rejected
 rather than guessed.
 
+## Access rules
+
+A service can be behind SSO and still serve a few paths unauthenticated — a counting script
+and a collection endpoint that other sites must reach, while the dashboard stays protected.
+`pangolin.p3l1.de/access-rules` carries that as a YAML list:
+
+```yaml
+metadata:
+  annotations:
+    pangolin.p3l1.de/access-rules: |
+      - action: allow
+        match: path
+        value: /script.js
+      - action: allow
+        match: path
+        value: /api/collect
+      - action: deny
+        match: cidr
+        value: 203.0.113.0/24
+```
+
+Rules are evaluated **before** authentication and the first match wins, so the three actions
+differ more than their names suggest:
+
+| Action | Effect |
+|---|---|
+| `allow` | **skips authentication entirely** for what the rule matches |
+| `deny` | refuses the request |
+| `pass` | falls through to the login, exactly as a non-matching request would |
+
+`pass` opens nothing. Use it to carve an exception out of a broader rule — deny a country,
+but send one CIDR through the normal login. Opening a path means `allow`, and an `allow` on
+too wide a glob is an authentication bypass for everything under it.
+
+**Order is the priority.** There is no `priority` field: Pangolin assigns one per position
+and rejects a resource whose priorities collide, which a partly annotated list makes easy to
+trigger. There is no `enabled` field either — a rule that should not apply is deleted.
+Writing either is rejected rather than ignored.
+
+`match` takes `path`, `cidr`, `ip`, `country`, `asn` or `region`. A `path` value is a
+whole-path glob: `/api/*` matches `/api` and `/api/a/b`, while `/script.js` matches only
+itself.
+
+The controller validates `path`, `cidr` and `ip` before sending them, because an apply is
+all or nothing — one bad value would unpublish every other route, not just the offending
+one. **`country`, `asn` and `region` cannot be checked this way**: they depend on MaxMind
+databases configured inside the Pangolin instance, which no API reports, so a value that
+instance refuses will fail the whole apply. Every route then reports `PublishFailed` until
+the rule is corrected.
+
+Details of the matching and the evidence behind it: [docs/access-rules.md](docs/access-rules.md).
+
 ## Scope of v0.1
 
 Deliberately narrow. A route is published only when it has exactly one hostname, one rule,
@@ -150,6 +202,7 @@ semantics.
 | Cross-namespace backendRef | `ResolvedRefs: False`, `RefNotPermitted` |
 | Site does not exist in the organisation | `Accepted: False`, `UnknownSite` |
 | Malformed healthcheck annotation | `Accepted: False`, `UnsupportedValue` |
+| Malformed access rule | `Accepted: False`, `UnsupportedValue` |
 | parentRef names no existing Gateway | `Accepted: False`, `NoMatchingParent` |
 
 Conditions are written per parentRef into `status.parents[]`, only on entries belonging to

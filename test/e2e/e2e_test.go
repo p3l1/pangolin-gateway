@@ -241,6 +241,9 @@ func TestRouteIsPublishedAndPruned(t *testing.T) {
 	if err := c.Create(ctx, route); err != nil {
 		t.Fatalf("creating HTTPRoute: %v", err)
 	}
+	// The test deletes this itself to exercise the prune; the cleanup is for the
+	// runs that fail before getting there, so the next one starts clean.
+	t.Cleanup(func() { _ = c.Delete(context.Background(), route) })
 
 	wantKey := "gw-" + namespace + "-e2e-web"
 
@@ -275,6 +278,38 @@ func TestRouteIsPublishedAndPruned(t *testing.T) {
 			}
 		}
 		return fmt.Errorf("no Accepted=True from our controller; parents = %+v", r.Status.Parents)
+	})
+
+	// Annotations do not bump generation, so an annotation-only edit reaches the
+	// workqueue solely through AnnotationChangedPredicate. Without it this change
+	// would sit unpublished until the next resync.
+	eachPoll(t, readyTimeout, func() error {
+		var r gatewayv1.HTTPRoute
+		key := types.NamespacedName{Namespace: namespace, Name: "e2e-web"}
+		if err := c.Get(ctx, key, &r); err != nil {
+			return err
+		}
+		if r.Annotations == nil {
+			r.Annotations = map[string]string{}
+		}
+		r.Annotations["pangolin.p3l1.de/access-rules"] =
+			"- action: allow\n  match: path\n  value: /script.js\n"
+		return c.Update(ctx, &r)
+	})
+
+	eachPoll(t, readyTimeout, func() error {
+		entry, ok := readFakeState(t).Resources[wantKey]
+		if !ok {
+			return fmt.Errorf("%s vanished from the fake", wantKey)
+		}
+		rules, ok := entry["rules"].([]any)
+		if !ok || len(rules) != 1 {
+			return fmt.Errorf("rules = %v, want the annotated rule", entry["rules"])
+		}
+		if got := rules[0].(map[string]any)["value"]; got != "/script.js" {
+			return fmt.Errorf("rules[0].value = %v, want /script.js", got)
+		}
+		return nil
 	})
 
 	if err := c.Delete(ctx, route); err != nil {

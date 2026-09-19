@@ -330,12 +330,18 @@ func translate(
 	}
 	target.Healthcheck = healthcheck
 
+	rules, err := rulesFor(r)
+	if err != nil {
+		return fail(gatewayv1.RouteReasonUnsupportedValue, "%s", err)
+	}
+
 	resource := pangolin.PublicResource{
 		Name:       name,
 		Mode:       pangolin.ModeHTTP,
 		FullDomain: host,
 		Auth:       &pangolin.Auth{SSOEnabled: sso},
 		Targets:    []pangolin.Target{target},
+		Rules:      rules,
 	}
 	return resource, Key(r.Namespace, r.Name), nil
 }

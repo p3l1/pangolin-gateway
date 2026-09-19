@@ -173,3 +173,90 @@ func TestTargetOmitsAnAbsentHealthcheck(t *testing.T) {
 		t.Errorf("target carries a healthcheck key when unset: %s", raw)
 	}
 }
+
+func TestRulesMarshalToPangolinKeys(t *testing.T) {
+	bp := Blueprint{PublicResources: map[string]PublicResource{
+		"gw-demo-web": {
+			Name: "demo/web", Mode: ModeHTTP, FullDomain: "demo.example.com",
+			Rules: Rules{
+				{Action: ActionAllow, Match: MatchPath, Value: "/script.js"},
+				{Action: ActionDeny, Match: MatchCIDR, Value: "203.0.113.0/24"},
+			},
+		},
+	}}
+
+	raw, err := json.Marshal(bp)
+	if err != nil {
+		t.Fatalf("marshalling blueprint: %v", err)
+	}
+
+	var got map[string]map[string]map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshalling blueprint: %v", err)
+	}
+
+	rules, ok := got["public-resources"]["gw-demo-web"]["rules"].([]any)
+	if !ok || len(rules) != 2 {
+		t.Fatalf("rules = %v, want two entries", got["public-resources"]["gw-demo-web"]["rules"])
+	}
+
+	first := rules[0].(map[string]any)
+	for key, want := range map[string]any{
+		"action": "allow",
+		"match":  "path",
+		"value":  "/script.js",
+	} {
+		if got := first[key]; got != want {
+			t.Errorf("rules[0][%q] = %v, want %v", key, got, want)
+		}
+	}
+
+	// Order is the contract: Pangolin assigns priority by index, and the first
+	// rule matching a request wins.
+	if got := rules[1].(map[string]any)["value"]; got != "203.0.113.0/24" {
+		t.Errorf("rules[1][value] = %v, want the second rule; order was not preserved", got)
+	}
+}
+
+// Priority and enabled are Pangolin's fields, not this controller's: order
+// carries priority, and a rule that should not apply is removed.
+func TestRulesCarryNoPriorityOrEnabledKey(t *testing.T) {
+	raw, err := json.Marshal(Rule{Action: ActionAllow, Match: MatchPath, Value: "/"})
+	if err != nil {
+		t.Fatalf("marshalling rule: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshalling rule: %v", err)
+	}
+	for _, key := range []string{"priority", "enabled"} {
+		if _, present := got[key]; present {
+			t.Errorf("rule carries %q, want it omitted", key)
+		}
+	}
+}
+
+// Pangolin derives applyRules from whether rules is a non-empty array, and its
+// schema accepts an array or nothing — never null. A nil slice marshalling to
+// null would fail the whole apply, and an absent key would leave rule
+// evaluation switched on after the last rule was removed.
+func TestRulesMarshalAsAnEmptyArrayWhenUnset(t *testing.T) {
+	raw, err := json.Marshal(PublicResource{Name: "demo/web", Mode: ModeHTTP})
+	if err != nil {
+		t.Fatalf("marshalling resource: %v", err)
+	}
+
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshalling resource: %v", err)
+	}
+
+	rules, present := got["rules"]
+	if !present {
+		t.Fatalf("resource carries no rules key: %s", raw)
+	}
+	if string(rules) != "[]" {
+		t.Errorf("rules = %s, want []", rules)
+	}
+}

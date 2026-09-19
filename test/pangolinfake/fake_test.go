@@ -4,9 +4,11 @@ package pangolinfake_test
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/p3l1/pangolin-gateway/internal/pangolin"
@@ -171,5 +173,91 @@ func TestFakeRejectsAMalformedKey(t *testing.T) {
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401 for a key without a dot", resp.StatusCode)
+	}
+}
+
+// One bad value rejects the whole document, which is the behaviour the
+// renderer's own validation exists to stay ahead of.
+func TestFakeRejectsTheWholeApplyForOneInvalidRule(t *testing.T) {
+	for name, rules := range map[string]pangolin.Rules{
+		"bad ip":       {{Action: pangolin.ActionDeny, Match: pangolin.MatchIP, Value: "nope"}},
+		"bad cidr":     {{Action: pangolin.ActionDeny, Match: pangolin.MatchCIDR, Value: "203.0.113.0"}},
+		"bad path":     {{Action: pangolin.ActionAllow, Match: pangolin.MatchPath, Value: "/a//b"}},
+		"bad action":   {{Action: "block", Match: pangolin.MatchPath, Value: "/x"}},
+		"bad match":    {{Action: pangolin.ActionAllow, Match: "header", Value: "/x"}},
+		"empty action": {{Match: pangolin.MatchPath, Value: "/x"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, c := newFake(t)
+
+			good := resource("good.example.com")
+			bad := resource("bad.example.com")
+			bad.Rules = rules
+
+			err := c.ApplyBlueprint(context.Background(), pangolin.Blueprint{
+				PublicResources: map[string]pangolin.PublicResource{
+					"gw-demo-good": good,
+					"gw-demo-bad":  bad,
+				},
+			})
+			if err == nil {
+				t.Fatal("the apply succeeded, want it rejected")
+			}
+			// All or nothing: the valid resource must not have been created either.
+			if got := f.Resources(); len(got) != 0 {
+				t.Errorf("fake holds %v, want nothing applied", got)
+			}
+		})
+	}
+}
+
+func TestFakeAcceptsWellFormedRules(t *testing.T) {
+	f, c := newFake(t)
+
+	r := resource("web.example.com")
+	r.Rules = pangolin.Rules{
+		{Action: pangolin.ActionAllow, Match: pangolin.MatchPath, Value: "/script.js"},
+		{Action: pangolin.ActionPass, Match: pangolin.MatchCIDR, Value: "203.0.113.0/24"},
+		{Action: pangolin.ActionDeny, Match: pangolin.MatchCountry, Value: "ALL"},
+	}
+
+	if err := c.ApplyBlueprint(context.Background(), pangolin.Blueprint{
+		PublicResources: map[string]pangolin.PublicResource{"gw-demo-web": r},
+	}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got := f.Resources()["gw-demo-web"].Rules; len(got) != 3 {
+		t.Errorf("rules = %+v, want all three stored", got)
+	}
+}
+
+// Pangolin's schema takes an array or no key at all. A nil slice encoded the
+// usual way would send null and fail the apply, which is why Rules marshals it
+// as an empty array.
+func TestFakeRejectsNullRules(t *testing.T) {
+	f, _ := newFake(t)
+	srv := httptest.NewServer(f.Handler())
+	t.Cleanup(srv.Close)
+
+	body := `{"blueprint":"` + base64.StdEncoding.EncodeToString([]byte(
+		`{"public-resources":{"gw-demo-web":{"name":"demo/web","mode":"http","rules":null}}}`,
+	)) + `"}`
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPut,
+		srv.URL+"/v1/org/test-org/blueprint", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer id.secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("applying: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for a null rules array", resp.StatusCode)
 	}
 }
