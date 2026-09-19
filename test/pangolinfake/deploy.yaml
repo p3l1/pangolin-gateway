@@ -1,0 +1,55 @@
+# The fake Pangolin Integration API, deployed into the e2e cluster so the
+# controller under test talks to it instead of to any real instance.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pangolin-fake
+  labels:
+    app.kubernetes.io/name: pangolin-fake
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pangolin-fake
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pangolin-fake
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: fake
+          image: pangolin-fake:dev
+          imagePullPolicy: IfNotPresent
+          args: ["--listen=:8080"]
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pangolin-fake
+  labels:
+    app.kubernetes.io/name: pangolin-fake
+spec:
+  selector:
+    app.kubernetes.io/name: pangolin-fake
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

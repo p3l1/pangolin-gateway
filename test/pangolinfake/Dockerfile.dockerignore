@@ -1,0 +1,7 @@
+bin/
+dist/
+.git/
+.envtest/
+charts/
+docs/
+.github/
