@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pangolin-gateway.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pangolin-gateway.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "pangolin-gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pangolin-gateway.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "pangolin-gateway.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: manager
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=:8080
+            {{- if .Values.leaderElection.enabled }}
+            - --leader-elect
+            {{- end }}
+            - --pangolin-endpoint={{ required "pangolin.endpoint is required" .Values.pangolin.endpoint }}
+            - --pangolin-org={{ required "pangolin.org is required" .Values.pangolin.org }}
+            - --default-site={{ required "pangolin.defaultSite is required" .Values.pangolin.defaultSite }}
+            - --resync-interval={{ .Values.pangolin.resyncInterval }}
+            {{- if .Values.pangolin.dryRun }}
+            - --dry-run
+            {{- end }}
+          env:
+            # Never an argument: flags are visible in the process list.
+            - name: PANGOLIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "pangolin.apiKeySecret.name is required" .Values.pangolin.apiKeySecret.name }}
+                  key: {{ .Values.pangolin.apiKeySecret.key }}
+          ports:
+            - name: metrics
+              containerPort: 8080
+            - name: probes
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

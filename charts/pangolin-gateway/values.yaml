@@ -1,0 +1,70 @@
+image:
+  repository: ghcr.io/p3l1/pangolin-gateway
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+pangolin:
+  # Integration API base URL INCLUDING its version path. Pangolin Cloud serves
+  # /v1, self-hosted usually /api/v1 — point this at the Integration API, not at
+  # the internal API, or every call comes back as an opaque 401.
+  endpoint: ""
+  # Organisation id.
+  org: ""
+  # Site niceId for routes without the pangolin.p3l1.de/site annotation. Required.
+  defaultSite: ""
+  # The integration key, of the form <key_id>.<key_secret>. Supply it yourself;
+  # this chart never creates a secret. The key needs three API actions:
+  # applyBlueprint, listResources and deleteResource.
+  apiKeySecret:
+    name: ""
+    key: apiKey
+  # Log every write instead of performing it.
+  dryRun: false
+  # How often to reconcile without a cluster event, repairing drift Pangolin-side.
+  resyncInterval: 5m
+
+gatewayClass:
+  # Install a GatewayClass alongside the controller.
+  create: true
+  name: pangolin
+
+replicaCount: 1
+
+leaderElection:
+  enabled: true
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+rbac:
+  create: true
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
