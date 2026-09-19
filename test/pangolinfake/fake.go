@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -167,6 +168,24 @@ func (f *Fake) handleApply(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(raw, &bp); err != nil {
 		writeError(w, http.StatusBadRequest, "blueprint is not JSON: "+err.Error())
 		return
+	}
+
+	// Pangolin's schema takes an array of rules or no key at all. A null fails
+	// validation, which the wire format only avoids because Rules marshals a nil
+	// slice as [].
+	if key, bad := resourceWithNullRules(raw); bad {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("Expected array, received null at \"public-resources.%s.rules\"", key))
+		return
+	}
+
+	// An invalid rule value throws inside the same transaction as everything
+	// else, so the whole document is rejected rather than partially applied.
+	for _, key := range sortedKeys(bp.PublicResources) {
+		if msg := checkRules(bp.PublicResources[key].Rules); msg != "" {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("%s (resource %s)", msg, key))
+			return
+		}
 	}
 
 	// full-domain must be unique across the instance; a real apply rejects the
@@ -388,4 +407,123 @@ func sortStrings(s []string) {
 			s[j], s[j-1] = s[j-1], s[j]
 		}
 	}
+}
+
+// resourceWithNullRules reports the first resource whose rules key is present
+// but null, which Pangolin's schema rejects — it takes an array or nothing.
+func resourceWithNullRules(raw []byte) (string, bool) {
+	var doc struct {
+		PublicResources map[string]map[string]json.RawMessage `json:"public-resources"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return "", false
+	}
+
+	for _, key := range sortedKeys(doc.PublicResources) {
+		rules, present := doc.PublicResources[key]["rules"]
+		if present && string(rules) == "null" {
+			return key, true
+		}
+	}
+	return "", false
+}
+
+// checkRules mirrors the validation Pangolin runs over a resource's rules and
+// returns its complaint, or "" when they pass. It throws inside the apply
+// transaction, so one bad value rejects the whole document — which is why the
+// renderer checks these values first.
+func checkRules(rules pangolin.Rules) string {
+	priorities := map[int]bool{}
+
+	for i, rule := range rules {
+		switch rule.Action {
+		case pangolin.ActionAllow, pangolin.ActionDeny, pangolin.ActionPass:
+		default:
+			return fmt.Sprintf("Invalid enum value for rules.%d.action: %q", i, rule.Action)
+		}
+
+		switch rule.Match {
+		case pangolin.MatchIP:
+			if net.ParseIP(rule.Value) == nil {
+				return "Invalid IP provided: " + rule.Value
+			}
+		case pangolin.MatchCIDR:
+			if _, _, err := net.ParseCIDR(rule.Value); err != nil {
+				return "Invalid CIDR provided: " + rule.Value
+			}
+		case pangolin.MatchPath:
+			if !validPathGlob(rule.Value) {
+				return "Invalid URL glob pattern: " + rule.Value
+			}
+		case pangolin.MatchCountry, pangolin.MatchASN, pangolin.MatchRegion:
+			// A real instance checks these against MaxMind databases it may not
+			// have, which no API reports. The fake accepts them, as an instance
+			// with the databases in place would.
+		default:
+			return fmt.Sprintf("Invalid enum value for rules.%d.match: %q", i, rule.Match)
+		}
+
+		// Pangolin assigns an unset priority from the index and refuses a
+		// resource whose priorities collide.
+		if priorities[i+1] {
+			return "Rules have conflicting or invalid priorities"
+		}
+		priorities[i+1] = true
+	}
+	return ""
+}
+
+// validPathGlob mirrors Pangolin's isValidUrlGlobPattern.
+func validPathGlob(pattern string) bool {
+	if pattern == "/" {
+		return true
+	}
+	pattern = strings.TrimPrefix(pattern, "/")
+	if pattern == "" {
+		return false
+	}
+
+	segments := strings.Split(pattern, "/")
+	for i, segment := range segments {
+		if segment == "" && i != len(segments)-1 {
+			return false
+		}
+		for j := 0; j < len(segment); j++ {
+			if segment[j] == '%' && j+2 < len(segment) {
+				if !isHex(segment[j+1]) || !isHex(segment[j+2]) {
+					return false
+				}
+				j += 2
+				continue
+			}
+			if !isPathChar(segment[j]) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isHex(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+}
+
+func isPathChar(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	default:
+		return strings.ContainsRune("-._~!$&'()*+,;#=@:", rune(c))
+	}
+}
+
+// sortedKeys keeps the fake's complaint about a document with several problems
+// the same on every apply, so a test can assert on the message.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sortStrings(keys)
+	return keys
 }

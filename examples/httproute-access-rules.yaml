@@ -1,0 +1,32 @@
+# A route behind SSO that still serves two paths unauthenticated: an analytics
+# service whose counting script and collection endpoint have to be reachable
+# from other sites, while its dashboard stays protected.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: web
+  namespace: demo
+  annotations:
+    pangolin.p3l1.de/sso: "true"
+    # Evaluated before authentication, first match wins, list order is the
+    # priority. "allow" skips authentication for what it matches — "pass" does
+    # not, it only falls through to the login.
+    pangolin.p3l1.de/access-rules: |
+      - action: allow
+        match: path
+        value: /script.js
+      - action: allow
+        match: path
+        value: /api/collect
+      - action: deny
+        match: cidr
+        value: 203.0.113.0/24
+spec:
+  parentRefs:
+    - name: pangolin
+  hostnames:
+    - demo.example.com
+  rules:
+    - backendRefs:
+        - name: web
+          port: 8080

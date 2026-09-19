@@ -592,3 +592,108 @@ func TestReconcilePublishesAHealthcheck(t *testing.T) {
 			hc.Hostname, hc.Port, entry.Targets[0].Hostname, entry.Targets[0].Port)
 	}
 }
+
+func TestReconcilePublishesAccessRules(t *testing.T) {
+	h := newHarness(t)
+	h.setupClassAndGateway(t, "pangolin")
+
+	r := h.newRoute("web", "web.example.com")
+	r.Annotations = map[string]string{gateway.AnnotationAccessRules: `
+- action: allow
+  match: path
+  value: /script.js
+- action: deny
+  match: cidr
+  value: 203.0.113.0/24
+`}
+	h.create(t, r)
+
+	h.mustReconcile(t)
+
+	entry, ok := h.fake.Resources()["gw-demo-web"]
+	if !ok {
+		t.Fatalf("route not published; fake holds %v", h.fake.Resources())
+	}
+	want := pangolin.Rules{
+		{Action: pangolin.ActionAllow, Match: pangolin.MatchPath, Value: "/script.js"},
+		{Action: pangolin.ActionDeny, Match: pangolin.MatchCIDR, Value: "203.0.113.0/24"},
+	}
+	if len(entry.Rules) != len(want) {
+		t.Fatalf("rules = %+v, want %+v", entry.Rules, want)
+	}
+	for i := range want {
+		if entry.Rules[i] != want[i] {
+			t.Errorf("rules[%d] = %+v, want %+v", i, entry.Rules[i], want[i])
+		}
+	}
+	// SSO stays on: an allow rule opens the paths it names, not the resource.
+	if entry.Auth == nil || !entry.Auth.SSOEnabled {
+		t.Errorf("auth = %+v, want sso-enabled true", entry.Auth)
+	}
+}
+
+// Pangolin switches rule evaluation off only for an empty rules array, so
+// removing the annotation must send one rather than omitting the key.
+func TestReconcileClearsAccessRulesWhenTheAnnotationGoes(t *testing.T) {
+	h := newHarness(t)
+	h.setupClassAndGateway(t, "pangolin")
+
+	r := h.newRoute("web", "web.example.com")
+	r.Annotations = map[string]string{
+		gateway.AnnotationAccessRules: "- action: allow\n  match: path\n  value: /open\n",
+	}
+	h.create(t, r)
+	h.mustReconcile(t)
+
+	var live gatewayv1.HTTPRoute
+	key := types.NamespacedName{Namespace: h.namespace, Name: "web"}
+	if err := h.client.Get(h.ctx, key, &live); err != nil {
+		t.Fatalf("getting route: %v", err)
+	}
+	delete(live.Annotations, gateway.AnnotationAccessRules)
+	if err := h.client.Update(h.ctx, &live); err != nil {
+		t.Fatalf("updating route: %v", err)
+	}
+
+	h.mustReconcile(t)
+
+	bp, ok := h.fake.LastBlueprint()
+	if !ok {
+		t.Fatal("no blueprint reached the fake")
+	}
+	if got := bp.PublicResources["gw-demo-web"].Rules; len(got) != 0 {
+		t.Errorf("rules = %+v, want none once the annotation is gone", got)
+	}
+}
+
+// The renderer validates rule values precisely because the apply is all or
+// nothing: were a bad one to reach Pangolin, every other route would go with it.
+func TestReconcileRejectsOnlyTheRouteWithABadAccessRule(t *testing.T) {
+	h := newHarness(t)
+	h.setupClassAndGateway(t, "pangolin")
+
+	bad := h.newRoute("web", "web.example.com")
+	bad.Annotations = map[string]string{
+		gateway.AnnotationAccessRules: "- action: deny\n  match: ip\n  value: not-an-ip\n",
+	}
+	h.create(t, bad)
+	h.create(t, h.newRoute("api", "api.example.com"))
+
+	h.mustReconcile(t)
+
+	if _, published := h.fake.Resources()["gw-demo-web"]; published {
+		t.Error("the route with a malformed rule was published")
+	}
+	if _, published := h.fake.Resources()["gw-demo-api"]; !published {
+		t.Errorf("the neighbouring route was dropped; fake holds %v", h.fake.Resources())
+	}
+
+	accepted := conditionOf(t, h.routeConditions(t, "web"),
+		string(gatewayv1.RouteConditionAccepted))
+	if accepted.Status != metav1.ConditionFalse {
+		t.Errorf("Accepted = %+v, want False", accepted)
+	}
+	if accepted.Reason != string(gatewayv1.RouteReasonUnsupportedValue) {
+		t.Errorf("reason = %q, want UnsupportedValue", accepted.Reason)
+	}
+}
