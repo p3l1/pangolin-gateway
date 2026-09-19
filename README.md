@@ -93,6 +93,7 @@ metadata:
   name: web
   namespace: demo
   annotations:
+    pangolin.p3l1.de/display-name: Demo Web   # shown in Pangolin; defaults to demo/web
     pangolin.p3l1.de/sso: "true"              # default; omit to keep SSO on
     pangolin.p3l1.de/site: edge-site          # defaults to --default-site
     pangolin.p3l1.de/healthcheck-path: /healthz  # switches the check on
@@ -111,6 +112,10 @@ spec:
 
 That publishes a resource keyed `gw-demo-web` with `full-domain: demo.example.com`, targeting
 `web.demo.svc.cluster.local:8080`.
+
+The key is derived from the route and never changes; `display-name` only affects what
+Pangolin's dashboard shows, and defaults to `<namespace>/<name>`. Migrating an existing
+resource can keep the name people already recognise.
 
 `pangolin.p3l1.de/sso` defaults to `"true"` on purpose: forgetting the annotation must not
 publish a service unprotected. A value that is neither `"true"` nor `"false"` is rejected

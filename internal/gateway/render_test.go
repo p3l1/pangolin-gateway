@@ -676,3 +676,39 @@ func TestRenderRejectsAHealthcheckPathWithoutASlash(t *testing.T) {
 		t.Errorf("Accepted = %+v, want False", v.Accepted)
 	}
 }
+
+// Pangolin shows this name in its dashboard, so a migrated resource should be
+// able to keep the one people already recognise.
+func TestRenderHonoursADisplayName(t *testing.T) {
+	r := route("demo", "web", withAnnotations(map[string]string{
+		AnnotationName: "Regenalarm",
+	}))
+
+	bp, _ := Render(defaultInputs(r))
+
+	if got, want := bp.PublicResources["gw-demo-web"].Name, "Regenalarm"; got != want {
+		t.Errorf("name = %q, want %q", got, want)
+	}
+}
+
+func TestRenderNamesAResourceAfterItsRouteByDefault(t *testing.T) {
+	bp, _ := Render(defaultInputs(route("demo", "web")))
+
+	if got, want := bp.PublicResources["gw-demo-web"].Name, "demo/web"; got != want {
+		t.Errorf("name = %q, want %q", got, want)
+	}
+}
+
+// An empty annotation is a mistake rather than a request for an empty name.
+func TestRenderRejectsABlankDisplayName(t *testing.T) {
+	r := route("demo", "web", withAnnotations(map[string]string{AnnotationName: "   "}))
+
+	bp, verdicts := Render(defaultInputs(r))
+
+	if _, published := bp.PublicResources["gw-demo-web"]; published {
+		t.Error("route with a blank display name was published")
+	}
+	if v := verdictFor(t, verdicts, "demo", "web"); v.Accepted.Status != metav1.ConditionFalse {
+		t.Errorf("Accepted = %+v, want False", v.Accepted)
+	}
+}
