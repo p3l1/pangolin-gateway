@@ -26,6 +26,9 @@ jobs:
         if: steps.release.outputs.release_created == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job never checks the repository out, so gh has no git remote to
+          # infer the repository from and fails with "not a git repository".
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.release.outputs.tag_name }}
         run: |
           echo "release-please created $TAG; dispatching the release workflow"
