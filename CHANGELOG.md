@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/p3l1/pangolin-gateway/compare/v0.2.0...v0.3.0) (2026-09-19)
+
+
+### Features
+
+* let a route name the resource Pangolin shows ([#14](https://github.com/p3l1/pangolin-gateway/issues/14)) ([683eb6a](https://github.com/p3l1/pangolin-gateway/commit/683eb6a7e272ef6163df028ea4f7fa630075e9a1))
+
 ## [0.2.0](https://github.com/p3l1/pangolin-gateway/compare/v0.1.0...v0.2.0) (2026-09-19)
 
 
