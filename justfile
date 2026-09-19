@@ -162,14 +162,35 @@ cluster-up:
 cluster-down:
     k3d cluster delete {{cluster}} || true
 
+# The release image, built the way CI builds it.
 docker-build:
     docker build -t {{image}}:{{tag}} --build-arg VERSION={{tag}} --build-arg COMMIT=$(git rev-parse --short HEAD) .
+
+# Local images for e2e: the binary is cross-compiled on the host and only copied
+# into the runtime layer. Compiling inside the container needs several GB, which
+# Docker Desktop often does not have, and the host toolchain is already warm.
+# Release images still come from the Dockerfiles, which CI uses unchanged.
+images-local:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    arch=$(go env GOARCH)
+    mkdir -p bin
+    CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build \
+        -ldflags "-s -w -X github.com/p3l1/pangolin-gateway/internal/version.Version={{tag}} -X github.com/p3l1/pangolin-gateway/internal/version.Commit=$(git rev-parse --short HEAD)" \
+        -o bin/manager-linux ./cmd
+    CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build \
+        -ldflags "-s -w" -o bin/pangolin-fake-linux ./test/pangolinfake/cmd
+    # bin/ is the build context, so the repository's .dockerignore does not apply.
+    printf 'FROM gcr.io/distroless/static:nonroot\nCOPY manager-linux /manager\nUSER 65532:65532\nENTRYPOINT ["/manager"]\n' \
+        | docker build -t {{image}}:{{tag}} -f - bin/
+    printf 'FROM gcr.io/distroless/static:nonroot\nCOPY pangolin-fake-linux /pangolin-fake\nUSER 65532:65532\nEXPOSE 8080\nENTRYPOINT ["/pangolin-fake"]\n' \
+        | docker build -t {{fake_image}}:{{tag}} -f - bin/
 
 # The fake Pangolin API. Built from test/, so it can never reach the production image.
 fake-build:
     docker build -t {{fake_image}}:{{tag}} -f test/pangolinfake/Dockerfile .
 
-deploy: docker-build fake-build cluster-up
+deploy: images-local cluster-up
     #!/usr/bin/env bash
     set -euo pipefail
     k3d image import {{image}}:{{tag}} {{fake_image}}:{{tag}} -c {{cluster}}
