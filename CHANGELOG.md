@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/p3l1/pangolin-gateway/compare/v0.1.0...v0.2.0) (2026-09-19)
+
+
+### Features
+
+* publish a healthcheck when the route annotates a path ([#13](https://github.com/p3l1/pangolin-gateway/issues/13)) ([df438ec](https://github.com/p3l1/pangolin-gateway/commit/df438ece7268e72d1ba0cf5067099a83b2121c26))
+
+
+### Bug Fixes
+
+* **ci:** give gh a repository when dispatching the release ([#11](https://github.com/p3l1/pangolin-gateway/issues/11)) ([7f4fc35](https://github.com/p3l1/pangolin-gateway/commit/7f4fc35124f755ed57253c71cc2ae9e6b3044301))
+
 ## 0.1.0 (2026-09-19)
 
 
