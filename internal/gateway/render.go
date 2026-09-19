@@ -114,13 +114,22 @@ type Verdict struct {
 // Published reports whether this route made it into the blueprint.
 func (v Verdict) Published() bool { return v.Key != "" }
 
+// rendered is one route's blueprint entry. Exactly one of public and private is
+// set: a route is reachable from the internet or through a Pangolin client, and
+// publishing it into both sections would claim its hostname twice.
+type rendered struct {
+	key        string
+	fullDomain string
+	public     *pangolin.PublicResource
+	private    *pangolin.PrivateResource
+}
+
 // candidate is a route that passed validation and is competing for its key and
 // hostname against the other candidates.
 type candidate struct {
 	name      types.NamespacedName
-	key       string
 	createdAt metav1.Time
-	resource  pangolin.PublicResource
+	entry     rendered
 	verdict   Verdict
 }
 
@@ -157,7 +166,7 @@ func Render(in Inputs) (pangolin.Blueprint, map[types.NamespacedName]Verdict) {
 			ParentRefs: served,
 		}
 
-		resource, key, cond := translate(r, in.DefaultSite, in.KnownSites)
+		entry, cond := translate(r, in.DefaultSite, in.KnownSites)
 		if cond != nil {
 			base.Accepted, base.ResolvedRefs = *cond, resolved()
 			if isRefReason(cond.Reason) {
@@ -174,14 +183,16 @@ func Render(in Inputs) (pangolin.Blueprint, map[types.NamespacedName]Verdict) {
 		base.Accepted, base.ResolvedRefs = accepted(), resolved()
 		candidates = append(candidates, candidate{
 			name:      nameOf(r),
-			key:       key,
 			createdAt: r.CreationTimestamp,
-			resource:  resource,
+			entry:     entry,
 			verdict:   base,
 		})
 	}
 
-	bp := pangolin.Blueprint{PublicResources: map[string]pangolin.PublicResource{}}
+	bp := pangolin.Blueprint{
+		PublicResources:  map[string]pangolin.PublicResource{},
+		PrivateResources: map[string]pangolin.PrivateResource{},
+	}
 	resolveCollisions(candidates, bp, verdicts)
 	return bp, verdicts
 }
@@ -206,30 +217,38 @@ func resolveCollisions(
 		}
 	})
 
+	// Both maps span the sections. Pangolin checks each section on its own, but
+	// two routes claiming one hostname is a mistake whichever side they sit on,
+	// and the check on the private side is narrower than it appears.
 	keyOwner := map[string]types.NamespacedName{}
 	hostOwner := map[string]types.NamespacedName{}
 
 	for _, c := range candidates {
-		if owner, taken := keyOwner[c.key]; taken {
+		if owner, taken := keyOwner[c.entry.key]; taken {
 			c.verdict.Accepted = rejected(gatewayv1.RouteConditionReason(ReasonDuplicateKey),
-				"resource key %q is already claimed by %s", c.key, owner)
+				"resource key %q is already claimed by %s", c.entry.key, owner)
 			c.verdict.Key = ""
 			verdicts[c.name] = c.verdict
 			continue
 		}
-		if owner, taken := hostOwner[c.resource.FullDomain]; taken {
+		if owner, taken := hostOwner[c.entry.fullDomain]; taken {
 			c.verdict.Accepted = rejected(gatewayv1.RouteConditionReason(ReasonDuplicateHostname),
-				"hostname %q is already claimed by %s", c.resource.FullDomain, owner)
+				"hostname %q is already claimed by %s", c.entry.fullDomain, owner)
 			c.verdict.Key = ""
 			verdicts[c.name] = c.verdict
 			continue
 		}
 
-		keyOwner[c.key] = c.name
-		hostOwner[c.resource.FullDomain] = c.name
-		bp.PublicResources[c.key] = c.resource
+		keyOwner[c.entry.key] = c.name
+		hostOwner[c.entry.fullDomain] = c.name
+		switch {
+		case c.entry.public != nil:
+			bp.PublicResources[c.entry.key] = *c.entry.public
+		case c.entry.private != nil:
+			bp.PrivateResources[c.entry.key] = *c.entry.private
+		}
 
-		c.verdict.Key = c.key
+		c.verdict.Key = c.entry.key
 		verdicts[c.name] = c.verdict
 	}
 }
@@ -240,7 +259,7 @@ func translate(
 	r gatewayv1.HTTPRoute,
 	defaultSite string,
 	knownSites map[string]bool,
-) (pangolin.PublicResource, string, *ConditionResult) {
+) (rendered, *ConditionResult) {
 	switch {
 	case len(r.Spec.Hostnames) == 0:
 		return fail(gatewayv1.RouteReasonUnsupportedValue,
@@ -294,11 +313,6 @@ func translate(
 		return fail(gatewayv1.RouteReasonUnsupportedValue, "backendRef has no port")
 	}
 
-	sso, err := ssoFor(r)
-	if err != nil {
-		return fail(gatewayv1.RouteReasonUnsupportedValue, "%s", err)
-	}
-
 	name := r.Namespace + "/" + r.Name
 	if v, ok := r.Annotations[AnnotationName]; ok {
 		if strings.TrimSpace(v) == "" {
@@ -317,42 +331,128 @@ func translate(
 			"site %q does not exist in this Pangolin organisation", site)
 	}
 
+	backendHost := fmt.Sprintf("%s.%s.svc.cluster.local", backend.Name, r.Namespace)
+	backendPort := int32(*backend.Port)
+
+	visibility, err := visibilityFor(r)
+	if err != nil {
+		return fail(gatewayv1.RouteReasonUnsupportedValue, "%s", err)
+	}
+
+	entry := rendered{key: Key(r.Namespace, r.Name), fullDomain: host}
+
+	if visibility == VisibilityPrivate {
+		resource, err := privateResource(r, name, host, site, backendHost, backendPort)
+		if err != nil {
+			return fail(gatewayv1.RouteReasonUnsupportedValue, "%s", err)
+		}
+		entry.private = resource
+		return entry, nil
+	}
+
+	resource, err := publicResource(r, name, host, site, backendHost, backendPort)
+	if err != nil {
+		return fail(gatewayv1.RouteReasonUnsupportedValue, "%s", err)
+	}
+	entry.public = resource
+	return entry, nil
+}
+
+func publicResource(
+	r gatewayv1.HTTPRoute,
+	name, host, site, backendHost string,
+	backendPort int32,
+) (*pangolin.PublicResource, error) {
+	// Roles and users grant access to a private resource; a proxied one is
+	// governed by its auth block, so honouring them here would be a lie.
+	if err := refuseAnnotations(r, "a public route",
+		"set "+AnnotationVisibility+": "+VisibilityPrivate+" to use it",
+		AnnotationRoles, AnnotationUsers); err != nil {
+		return nil, err
+	}
+
+	sso, err := ssoFor(r)
+	if err != nil {
+		return nil, err
+	}
+
 	target := pangolin.Target{
 		Site:     site,
 		Method:   pangolin.MethodHTTP,
-		Hostname: fmt.Sprintf("%s.%s.svc.cluster.local", backend.Name, r.Namespace),
-		Port:     int32(*backend.Port),
+		Hostname: backendHost,
+		Port:     backendPort,
 	}
 
 	healthcheck, err := healthcheckFor(r, target)
 	if err != nil {
-		return fail(gatewayv1.RouteReasonUnsupportedValue, "%s", err)
+		return nil, err
 	}
 	target.Healthcheck = healthcheck
 
 	rules, err := rulesFor(r)
 	if err != nil {
-		return fail(gatewayv1.RouteReasonUnsupportedValue, "%s", err)
+		return nil, err
 	}
 
-	resource := pangolin.PublicResource{
+	return &pangolin.PublicResource{
 		Name:       name,
 		Mode:       pangolin.ModeHTTP,
 		FullDomain: host,
 		Auth:       &pangolin.Auth{SSOEnabled: sso},
 		Targets:    []pangolin.Target{target},
 		Rules:      rules,
+	}, nil
+}
+
+func privateResource(
+	r gatewayv1.HTTPRoute,
+	name, host, site, backendHost string,
+	backendPort int32,
+) (*pangolin.PrivateResource, error) {
+	// A private resource has no auth block, no targets and no rules. Publishing
+	// one while dropping any of these would protect it differently from what the
+	// route says, so each is refused rather than ignored.
+	if err := refuseAnnotations(r, "a private route",
+		"access is granted by "+AnnotationRoles+" and "+AnnotationUsers,
+		AnnotationSSO, AnnotationAccessRules); err != nil {
+		return nil, err
 	}
-	return resource, Key(r.Namespace, r.Name), nil
+	if err := refuseAnnotations(r, "a private route",
+		"a private resource has no targets to check",
+		AnnotationHealthcheckPath, AnnotationHealthcheckInterval,
+		AnnotationHealthcheckTimeout); err != nil {
+		return nil, err
+	}
+
+	roles, err := grantList(r, AnnotationRoles)
+	if err != nil {
+		return nil, err
+	}
+	users, err := grantList(r, AnnotationUsers)
+	if err != nil {
+		return nil, err
+	}
+
+	return &pangolin.PrivateResource{
+		Name:            name,
+		Mode:            pangolin.ModeHTTP,
+		Sites:           []string{site},
+		Destination:     backendHost,
+		DestinationPort: backendPort,
+		FullDomain:      host,
+		Scheme:          pangolin.SchemeHTTP,
+		Roles:           roles,
+		Users:           users,
+	}, nil
 }
 
 func fail(
 	reason gatewayv1.RouteConditionReason,
 	format string,
 	args ...any,
-) (pangolin.PublicResource, string, *ConditionResult) {
+) (rendered, *ConditionResult) {
 	c := rejected(reason, format, args...)
-	return pangolin.PublicResource{}, "", &c
+	return rendered{}, &c
 }
 
 // Key is the blueprint key for a route. Collisions are possible because hyphens

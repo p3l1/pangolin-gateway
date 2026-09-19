@@ -261,3 +261,161 @@ func TestFakeRejectsNullRules(t *testing.T) {
 		t.Errorf("status = %d, want 400 for a null rules array", resp.StatusCode)
 	}
 }
+
+func privateResource(host string) pangolin.PrivateResource {
+	return pangolin.PrivateResource{
+		Name:            "demo/web",
+		Mode:            pangolin.ModeHTTP,
+		Sites:           []string{"test-site"},
+		Destination:     "web.demo.svc.cluster.local",
+		DestinationPort: 8080,
+		FullDomain:      host,
+		Scheme:          pangolin.SchemeHTTP,
+	}
+}
+
+func TestFakeStoresPrivateResourcesSeparately(t *testing.T) {
+	f, c := newFake(t)
+
+	if err := c.ApplyBlueprint(context.Background(), pangolin.Blueprint{
+		PublicResources: map[string]pangolin.PublicResource{
+			"gw-demo-pub": resource("pub.example.com"),
+		},
+		PrivateResources: map[string]pangolin.PrivateResource{
+			"gw-demo-priv": privateResource("priv.example.com"),
+		},
+	}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	if _, ok := f.Resources()["gw-demo-priv"]; ok {
+		t.Error("the private resource landed in the public section")
+	}
+	entry, ok := f.PrivateResources()["gw-demo-priv"]
+	if !ok {
+		t.Fatalf("no private resource stored; have %v", f.PrivateResources())
+	}
+	if got, want := entry.Destination, "web.demo.svc.cluster.local"; got != want {
+		t.Errorf("destination = %q, want %q", got, want)
+	}
+}
+
+// The prune needs the numeric id, and a private resource is absent from the
+// public listing entirely — it would otherwise never be seen, let alone removed.
+func TestFakeListsAndDeletesPrivateResources(t *testing.T) {
+	f, c := newFake(t)
+	ctx := context.Background()
+
+	id := f.SeedPrivate("gw-demo-web", privateResource("web.example.com"))
+
+	public, err := c.ListPublicResources(ctx)
+	if err != nil {
+		t.Fatalf("ListPublicResources: %v", err)
+	}
+	if len(public) != 0 {
+		t.Errorf("public listing = %+v, want the private resource absent", public)
+	}
+
+	rows, err := c.ListPrivateResources(ctx)
+	if err != nil {
+		t.Fatalf("ListPrivateResources: %v", err)
+	}
+	if len(rows) != 1 || rows[0].NiceID != "gw-demo-web" || rows[0].ResourceID != id {
+		t.Fatalf("private listing = %+v, want gw-demo-web with id %d", rows, id)
+	}
+
+	if err := c.DeletePrivateResource(ctx, id); err != nil {
+		t.Fatalf("DeletePrivateResource: %v", err)
+	}
+	if got := f.PrivateResources(); len(got) != 0 {
+		t.Errorf("fake still holds %v after the delete", got)
+	}
+	if got := f.PrivateDeleted(); len(got) != 1 || got[0] != id {
+		t.Errorf("privateDeleted = %v, want [%d]", got, id)
+	}
+}
+
+// Each section has its own id sequence, so a siteResourceId and a resourceId of
+// the same number are different resources. Deleting the wrong one would be
+// silent data loss.
+func TestFakeKeepsTheTwoIDSequencesApart(t *testing.T) {
+	f, c := newFake(t)
+	ctx := context.Background()
+
+	publicID := f.Seed("gw-demo-pub", resource("pub.example.com"))
+	privateID := f.SeedPrivate("gw-demo-priv", privateResource("priv.example.com"))
+	if publicID != privateID {
+		t.Fatalf("ids are %d and %d; this test needs them to collide", publicID, privateID)
+	}
+
+	if err := c.DeletePrivateResource(ctx, privateID); err != nil {
+		t.Fatalf("DeletePrivateResource: %v", err)
+	}
+	if _, ok := f.Resources()["gw-demo-pub"]; !ok {
+		t.Error("deleting a private resource removed the public one with the same id")
+	}
+}
+
+func TestFakeRejectsTheWholeApplyForAnInvalidPrivateResource(t *testing.T) {
+	for name, mutate := range map[string]func(*pangolin.PrivateResource){
+		"no destination": func(r *pangolin.PrivateResource) { r.Destination = "" },
+		"no name":        func(r *pangolin.PrivateResource) { r.Name = "" },
+		"no mode":        func(r *pangolin.PrivateResource) { r.Mode = "" },
+		"unknown site":   func(r *pangolin.PrivateResource) { r.Sites = []string{"nowhere"} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, c := newFake(t)
+
+			bad := privateResource("bad.example.com")
+			mutate(&bad)
+
+			err := c.ApplyBlueprint(context.Background(), pangolin.Blueprint{
+				PublicResources: map[string]pangolin.PublicResource{
+					"gw-demo-pub": resource("pub.example.com"),
+				},
+				PrivateResources: map[string]pangolin.PrivateResource{"gw-demo-bad": bad},
+			})
+			if err == nil {
+				t.Fatal("the apply succeeded, want it rejected")
+			}
+			if got := f.Resources(); len(got) != 0 {
+				t.Errorf("public section holds %v, want nothing applied", got)
+			}
+			if got := f.PrivateResources(); len(got) != 0 {
+				t.Errorf("private section holds %v, want nothing applied", got)
+			}
+		})
+	}
+}
+
+func TestFakeRejectsADuplicateFullDomainWithinThePrivateSection(t *testing.T) {
+	_, c := newFake(t)
+
+	err := c.ApplyBlueprint(context.Background(), pangolin.Blueprint{
+		PrivateResources: map[string]pangolin.PrivateResource{
+			"gw-demo-a": privateResource("shared.example.com"),
+			"gw-demo-b": privateResource("shared.example.com"),
+		},
+	})
+	if err == nil {
+		t.Fatal("the apply succeeded, want it rejected")
+	}
+}
+
+// Pangolin checks each section against itself, so it would accept this. The
+// renderer refuses it anyway, which is a deliberate difference rather than a
+// behaviour the fake should invent.
+func TestFakeAcceptsOneFullDomainAcrossBothSections(t *testing.T) {
+	_, c := newFake(t)
+
+	if err := c.ApplyBlueprint(context.Background(), pangolin.Blueprint{
+		PublicResources: map[string]pangolin.PublicResource{
+			"gw-demo-pub": resource("shared.example.com"),
+		},
+		PrivateResources: map[string]pangolin.PrivateResource{
+			"gw-demo-priv": privateResource("shared.example.com"),
+		},
+	}); err != nil {
+		t.Errorf("apply rejected: %v; Pangolin checks full-domain per section", err)
+	}
+}

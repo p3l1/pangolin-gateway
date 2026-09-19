@@ -21,8 +21,10 @@ import (
 type Client interface {
 	ApplyBlueprint(ctx context.Context, bp Blueprint) error
 	ListPublicResources(ctx context.Context) ([]Resource, error)
+	ListPrivateResources(ctx context.Context) ([]Resource, error)
 	ListSites(ctx context.Context) ([]Site, error)
 	DeletePublicResource(ctx context.Context, id int) error
+	DeletePrivateResource(ctx context.Context, id int) error
 }
 
 // The API key action each route is guarded by, named in AuthError so a denial
@@ -32,6 +34,11 @@ const (
 	actionListResources  = "listResources"
 	actionListSites      = "listSites"
 	actionDeleteResource = "deleteResource"
+
+	// Private resources live in their own table behind their own routes, so
+	// they are guarded by their own pair of actions.
+	actionListSiteResources  = "listSiteResources"
+	actionDeleteSiteResource = "deleteSiteResource"
 )
 
 const (
@@ -146,6 +153,21 @@ type sitesData struct {
 
 type listData struct {
 	Resources  []Resource `json:"resources"`
+	Pagination struct {
+		Total    int `json:"total"`
+		PageSize int `json:"pageSize"`
+		Page     int `json:"page"`
+	} `json:"pagination"`
+}
+
+// privateListData is the same listing in a different spelling: its rows sit
+// under siteResources and name the numeric id siteResourceId. The quirk is kept
+// here so the prune sees one row type for both sections.
+type privateListData struct {
+	SiteResources []struct {
+		SiteResourceID int    `json:"siteResourceId"`
+		NiceID         string `json:"niceId"`
+	} `json:"siteResources"`
 	Pagination struct {
 		Total    int `json:"total"`
 		PageSize int `json:"pageSize"`
@@ -271,10 +293,50 @@ func (c *HTTPClient) ListSites(ctx context.Context) ([]Site, error) {
 	}
 }
 
+// ListPrivateResources reports the private resources the organisation holds.
+// They are absent from the public listing, so the prune would never see them.
+func (c *HTTPClient) ListPrivateResources(ctx context.Context) ([]Resource, error) {
+	var all []Resource
+
+	for page := 1; ; page++ {
+		path := fmt.Sprintf("/org/%s/private-resources?page=%s&pageSize=%s",
+			url.PathEscape(c.orgID), strconv.Itoa(page), strconv.Itoa(listPageSize))
+
+		raw, err := c.do(ctx, http.MethodGet, path, actionListSiteResources, nil)
+		if err != nil {
+			return nil, fmt.Errorf("listing private resources (page %d): %w", page, err)
+		}
+
+		var env envelope[privateListData]
+		if err := json.Unmarshal(raw, &env); err != nil {
+			return nil, fmt.Errorf("decoding private resources (page %d): %w", page, err)
+		}
+		if got := env.Data.Pagination.Page; got != 0 && got != page {
+			return nil, fmt.Errorf(
+				"listing private resources stalled: asked for page %d, got page %d", page, got)
+		}
+
+		for _, row := range env.Data.SiteResources {
+			all = append(all, Resource{ResourceID: row.SiteResourceID, NiceID: row.NiceID})
+		}
+		if len(env.Data.SiteResources) == 0 || len(all) >= env.Data.Pagination.Total {
+			return all, nil
+		}
+	}
+}
+
 func (c *HTTPClient) DeletePublicResource(ctx context.Context, id int) error {
 	path := "/public-resource/" + strconv.Itoa(id)
 	if _, err := c.do(ctx, http.MethodDelete, path, actionDeleteResource, nil); err != nil {
 		return fmt.Errorf("deleting public resource %d: %w", id, err)
+	}
+	return nil
+}
+
+func (c *HTTPClient) DeletePrivateResource(ctx context.Context, id int) error {
+	path := "/private-resource/" + strconv.Itoa(id)
+	if _, err := c.do(ctx, http.MethodDelete, path, actionDeleteSiteResource, nil); err != nil {
+		return fmt.Errorf("deleting private resource %d: %w", id, err)
 	}
 	return nil
 }

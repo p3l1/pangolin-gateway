@@ -143,9 +143,11 @@ func TestControllerPodIsReadyWithoutRestarts(t *testing.T) {
 // fakeState is what the fake reports through its control endpoint, which is how
 // e2e inspects it: the test runs outside the cluster, the fake inside it.
 type fakeState struct {
-	Resources map[string]map[string]any `json:"resources"`
-	Applies   int                       `json:"applies"`
-	Deleted   []int                     `json:"deleted"`
+	Resources        map[string]map[string]any `json:"resources"`
+	PrivateResources map[string]map[string]any `json:"privateResources"`
+	Applies          int                       `json:"applies"`
+	Deleted          []int                     `json:"deleted"`
+	PrivateDeleted   []int                     `json:"privateDeleted"`
 }
 
 func readFakeState(t *testing.T) fakeState {
@@ -334,4 +336,90 @@ func keysOf(m map[string]map[string]any) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// Private resources are a second listing over a second table with its own
+// delete route, so nothing about them is exercised by the public path.
+func TestPrivateRouteIsPublishedAndPruned(t *testing.T) {
+	c := newClient(t)
+	ctx := context.Background()
+
+	waitForDeployment(t, c, deploymentName)
+	waitForDeployment(t, c, fakeDeployment)
+
+	gw := &gatewayv1.Gateway{}
+	gw.Namespace = namespace
+	gw.Name = "e2e-private-gw"
+	gw.Spec.GatewayClassName = "pangolin"
+	gw.Spec.Listeners = []gatewayv1.Listener{{
+		Name: "http", Port: 80, Protocol: gatewayv1.HTTPProtocolType,
+	}}
+	if err := c.Create(ctx, gw); err != nil {
+		t.Fatalf("creating Gateway: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Delete(context.Background(), gw) })
+
+	port := gatewayv1.PortNumber(8080)
+	route := &gatewayv1.HTTPRoute{}
+	route.Namespace = namespace
+	route.Name = "e2e-internal"
+	route.Annotations = map[string]string{
+		"pangolin.p3l1.de/visibility": "private",
+		"pangolin.p3l1.de/roles":      "Member",
+	}
+	route.Spec.ParentRefs = []gatewayv1.ParentReference{{Name: "e2e-private-gw"}}
+	route.Spec.Hostnames = []gatewayv1.Hostname{"e2e-internal.example.com"}
+	route.Spec.Rules = []gatewayv1.HTTPRouteRule{{
+		BackendRefs: []gatewayv1.HTTPBackendRef{{
+			BackendRef: gatewayv1.BackendRef{
+				BackendObjectReference: gatewayv1.BackendObjectReference{
+					Name: "e2e-internal", Port: &port,
+				},
+			},
+		}},
+	}}
+	if err := c.Create(ctx, route); err != nil {
+		t.Fatalf("creating HTTPRoute: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Delete(context.Background(), route) })
+
+	wantKey := "gw-" + namespace + "-e2e-internal"
+
+	eachPoll(t, readyTimeout, func() error {
+		state := readFakeState(t)
+		if _, ok := state.Resources[wantKey]; ok {
+			return fmt.Errorf("%s reached the public section", wantKey)
+		}
+		entry, ok := state.PrivateResources[wantKey]
+		if !ok {
+			return fmt.Errorf("%s not published yet; fake holds %v",
+				wantKey, keysOf(state.PrivateResources))
+		}
+		if got := entry["destination"]; got != "e2e-internal."+namespace+".svc.cluster.local" {
+			return fmt.Errorf("destination = %v, want the Service FQDN", got)
+		}
+		if got := entry["mode"]; got != "http" {
+			return fmt.Errorf("mode = %v, want http", got)
+		}
+		return nil
+	})
+
+	before := len(readFakeState(t).PrivateDeleted)
+
+	if err := c.Delete(ctx, route); err != nil {
+		t.Fatalf("deleting HTTPRoute: %v", err)
+	}
+
+	eachPoll(t, readyTimeout, func() error {
+		state := readFakeState(t)
+		if _, ok := state.PrivateResources[wantKey]; ok {
+			return fmt.Errorf("%s survived the route's deletion", wantKey)
+		}
+		// Through the private endpoint, not the public one: the two sections
+		// number their resources independently.
+		if len(state.PrivateDeleted) <= before {
+			return fmt.Errorf("no DELETE reached the private endpoint")
+		}
+		return nil
+	})
 }

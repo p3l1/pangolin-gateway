@@ -16,6 +16,12 @@ const (
 	MethodHTTP = "http"
 )
 
+// Schemes a private resource uses to reach its destination. Its public
+// counterpart is a target's method.
+const (
+	SchemeHTTP = "http"
+)
+
 // Rule actions. Pangolin evaluates rules before any authentication: "allow"
 // returns immediately and bypasses SSO, "deny" blocks, and "pass" falls through
 // to the authentication checks — the same as no rule matching at all.
@@ -39,6 +45,11 @@ const (
 // sections this controller owns are modelled; Pangolin leaves absent sections alone.
 type Blueprint struct {
 	PublicResources map[string]PublicResource `json:"public-resources"`
+
+	// Merged into client-resources by Pangolin, the way public-resources is
+	// merged into proxy-resources. Reachable only through a Pangolin client, so
+	// it carries no auth block: access is granted by role and by user.
+	PrivateResources map[string]PrivateResource `json:"private-resources"`
 }
 
 // PublicResource is one entry under public-resources, keyed by its niceId.
@@ -98,6 +109,28 @@ type Healthcheck struct {
 	Path     string `json:"path"`
 	Interval int    `json:"interval"`
 	Timeout  int    `json:"timeout"`
+}
+
+// PrivateResource is one entry under private-resources, keyed by its niceId.
+// Only mode http is modelled: the other modes describe a destination with port
+// ranges and no Kubernetes workload behind it, which an HTTPRoute cannot say.
+type PrivateResource struct {
+	Name string `json:"name"`
+	Mode string `json:"mode"`
+
+	// The plural key. Pangolin still reads a singular "site" but has deprecated it.
+	Sites []string `json:"sites,omitempty"`
+
+	Destination     string `json:"destination,omitempty"`
+	DestinationPort int32  `json:"destination-port,omitempty"`
+	FullDomain      string `json:"full-domain,omitempty"`
+	Scheme          string `json:"scheme,omitempty"`
+
+	// Pangolin forces tcp-ports, udp-ports, disable-icmp and ssl for mode http,
+	// so sending them would only restate what it decides anyway.
+
+	Roles []string `json:"roles,omitempty"`
+	Users []string `json:"users,omitempty"`
 }
 
 // Site is one row of the sites listing. Only the niceId matters here: it is what

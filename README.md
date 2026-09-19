@@ -39,7 +39,12 @@ removes it; a finalizer would block namespace deletion whenever the controller i
 A key missing one returns 401 or 403 for that operation alone, which looks exactly like a bad
 key or a wrong endpoint.
 
-A fourth, `listSites`, is strongly recommended. Pangolin aborts an entire blueprint apply when
+Publishing private resources needs two more, `listSiteResources` and `deleteSiteResource`.
+They guard a separate pair of endpoints over a separate table, so a key without them still
+publishes private resources but can never prune one: a resource whose route is deleted would
+stay published forever.
+
+`listSites` is strongly recommended. Pangolin aborts an entire blueprint apply when
 one target names a site that does not exist, so a single mistyped `pangolin.p3l1.de/site`
 annotation would unpublish every route. With `listSites` the controller checks site names
 first and rejects only the offending route. Without it the check is skipped and the controller
@@ -173,6 +178,39 @@ the rule is corrected.
 
 Details of the matching and the evidence behind it: [docs/access-rules.md](docs/access-rules.md).
 
+## Private resources
+
+Pangolin separates resources reachable from the internet from those reachable only through a
+connected Pangolin client. `pangolin.p3l1.de/visibility` chooses which one a route becomes:
+
+```yaml
+metadata:
+  annotations:
+    pangolin.p3l1.de/visibility: private
+    pangolin.p3l1.de/roles: Member, Operators      # optional, comma-separated
+    pangolin.p3l1.de/users: alice@example.com      # optional, comma-separated
+```
+
+The default is `public`, so a route that says nothing behaves exactly as it did before.
+
+Without `roles` or `users` only the organisation's admin role reaches the resource — a safe
+default, not a broken one. Note that Pangolin **creates a role it does not know** rather than
+refusing it, so a misspelled role name does not fail the apply; it silently produces an empty
+role that grants nobody anything.
+
+A private resource has no auth block, no targets and no rules, so `sso`, the healthcheck
+annotations and `access-rules` have nothing to map onto. A private route carrying one of them
+is rejected rather than published without it. `roles` and `users` on a public route are
+likewise rejected: quietly ignoring them would leave the author believing access is
+restricted.
+
+Only `mode: http` is covered. Pangolin's `host` and `cidr` modes describe a destination with
+port ranges and no Kubernetes workload behind it — typically something outside the cluster,
+reachable from the site. No Gateway API object says that honestly, so those modes are out of
+scope rather than approximated.
+
+Details and the evidence behind them: [docs/private-resources.md](docs/private-resources.md).
+
 ## Scope of v0.1
 
 Deliberately narrow. A route is published only when it has exactly one hostname, one rule,
@@ -185,9 +223,9 @@ Its hostname and port always mirror the target's — a check against a different
 would not describe that target — so only the path and, optionally, the interval and
 timeout are annotated.
 
-Not covered yet: TCPRoute, TLSRoute, `private-resources`, policies, multiple hostnames per
-route, cross-namespace backends via ReferenceGrant, and listener/`allowedRoutes`
-semantics.
+Not covered yet: TCPRoute, TLSRoute, the `host`, `cidr`, `ssh` and `inference` private
+modes, policies, multiple hostnames per route, cross-namespace backends via ReferenceGrant,
+and listener/`allowedRoutes` semantics.
 
 ## Status conditions
 
@@ -203,6 +241,7 @@ semantics.
 | Site does not exist in the organisation | `Accepted: False`, `UnknownSite` |
 | Malformed healthcheck annotation | `Accepted: False`, `UnsupportedValue` |
 | Malformed access rule | `Accepted: False`, `UnsupportedValue` |
+| Annotation the chosen visibility cannot honour | `Accepted: False`, `UnsupportedValue` |
 | parentRef names no existing Gateway | `Accepted: False`, `NoMatchingParent` |
 
 Conditions are written per parentRef into `status.parents[]`, only on entries belonging to

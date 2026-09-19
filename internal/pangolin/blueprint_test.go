@@ -105,19 +105,6 @@ func TestBlueprintOmitsUnsetOptionalFields(t *testing.T) {
 	}
 }
 
-func TestBlueprintWithNoResourcesStillMarshalsTheKey(t *testing.T) {
-	raw, err := json.Marshal(Blueprint{PublicResources: map[string]PublicResource{}})
-	if err != nil {
-		t.Fatalf("marshalling blueprint: %v", err)
-	}
-
-	// An absent key would leave Pangolin's prefault in place; an empty object is
-	// the explicit "this controller currently owns nothing" statement.
-	if got, want := string(raw), `{"public-resources":{}}`; got != want {
-		t.Errorf("empty blueprint = %s, want %s", got, want)
-	}
-}
-
 func TestHealthcheckMarshalsToPangolinKeys(t *testing.T) {
 	bp := Blueprint{PublicResources: map[string]PublicResource{
 		"gw-demo-web": {
@@ -258,5 +245,94 @@ func TestRulesMarshalAsAnEmptyArrayWhenUnset(t *testing.T) {
 	}
 	if string(rules) != "[]" {
 		t.Errorf("rules = %s, want []", rules)
+	}
+}
+
+func TestPrivateResourceMarshalsToPangolinKeys(t *testing.T) {
+	bp := Blueprint{PrivateResources: map[string]PrivateResource{
+		"gw-demo-web": {
+			Name:            "demo/web",
+			Mode:            ModeHTTP,
+			Sites:           []string{"my-site"},
+			Destination:     "web.demo.svc.cluster.local",
+			DestinationPort: 8080,
+			FullDomain:      "demo.example.com",
+			Scheme:          SchemeHTTP,
+			Roles:           []string{"Member"},
+			Users:           []string{"alice@example.com"},
+		},
+	}}
+
+	raw, err := json.Marshal(bp)
+	if err != nil {
+		t.Fatalf("marshalling blueprint: %v", err)
+	}
+
+	var got map[string]map[string]map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshalling blueprint: %v", err)
+	}
+	entry, ok := got["private-resources"]["gw-demo-web"]
+	if !ok {
+		t.Fatalf("no private-resources entry in %s", raw)
+	}
+
+	for key, want := range map[string]any{
+		"name":             "demo/web",
+		"mode":             "http",
+		"destination":      "web.demo.svc.cluster.local",
+		"destination-port": float64(8080),
+		"full-domain":      "demo.example.com",
+		"scheme":           "http",
+	} {
+		if got := entry[key]; got != want {
+			t.Errorf("entry[%q] = %v, want %v", key, got, want)
+		}
+	}
+
+	// The plural key: Pangolin deprecated the singular "site".
+	sites, ok := entry["sites"].([]any)
+	if !ok || len(sites) != 1 || sites[0] != "my-site" {
+		t.Errorf("sites = %v, want [my-site]", entry["sites"])
+	}
+	if _, present := entry["site"]; present {
+		t.Error("entry carries the deprecated site key")
+	}
+}
+
+// tcp-ports, udp-ports and disable-icmp are forced by Pangolin for http mode,
+// and auth has no counterpart on a private resource at all.
+func TestPrivateResourceOmitsWhatHTTPModeDoesNotUse(t *testing.T) {
+	raw, err := json.Marshal(PrivateResource{Name: "demo/web", Mode: ModeHTTP})
+	if err != nil {
+		t.Fatalf("marshalling resource: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshalling resource: %v", err)
+	}
+	for _, key := range []string{
+		"tcp-ports", "udp-ports", "disable-icmp", "auth", "targets", "rules",
+		"roles", "users", "alias", "ssl",
+	} {
+		if _, present := got[key]; present {
+			t.Errorf("resource carries %q, want it omitted when unset", key)
+		}
+	}
+}
+
+// An absent section would leave Pangolin's prefault in place; an empty object is
+// the explicit "this controller currently owns nothing here".
+func TestBlueprintCarriesBothSectionsWhenEmpty(t *testing.T) {
+	raw, err := json.Marshal(Blueprint{
+		PublicResources:  map[string]PublicResource{},
+		PrivateResources: map[string]PrivateResource{},
+	})
+	if err != nil {
+		t.Fatalf("marshalling blueprint: %v", err)
+	}
+	if got, want := string(raw), `{"public-resources":{},"private-resources":{}}`; got != want {
+		t.Errorf("empty blueprint = %s, want %s", got, want)
 	}
 }

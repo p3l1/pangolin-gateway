@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package pangolinfake reproduces the three Integration API routes this
-// controller uses, so envtest and e2e never reach a real Pangolin instance.
+// Package pangolinfake reproduces the Integration API routes this controller
+// uses, so envtest and e2e never reach a real Pangolin instance.
 package pangolinfake
 
 import (
@@ -29,17 +29,29 @@ type Fake struct {
 	deleted   []int
 	sites     []string
 
-	failApply  int
-	failList   int
-	failSites  int
-	failDelete int
+	// Private resources live in their own table behind their own routes, with
+	// their own id sequence: Pangolin's siteResourceId is not a resourceId.
+	privateResources map[string]pangolin.PrivateResource
+	privateIDs       map[string]int
+	nextPrivateID    int
+	privateDeleted   []int
+
+	failApply         int
+	failList          int
+	failPrivateList   int
+	failSites         int
+	failDelete        int
+	failPrivateDelete int
 }
 
 func New() *Fake {
 	return &Fake{
-		resources: map[string]pangolin.PublicResource{},
-		ids:       map[string]int{},
-		nextID:    1,
+		resources:        map[string]pangolin.PublicResource{},
+		ids:              map[string]int{},
+		nextID:           1,
+		privateResources: map[string]pangolin.PrivateResource{},
+		privateIDs:       map[string]int{},
+		nextPrivateID:    1,
 		// A real organisation always has at least one site; tests that care name
 		// their own via AddSite.
 		sites: []string{"test-site", "default-site"},
@@ -52,6 +64,18 @@ func (f *Fake) FailApply(status int)  { f.mu.Lock(); f.failApply = status; f.mu.
 func (f *Fake) FailList(status int)   { f.mu.Lock(); f.failList = status; f.mu.Unlock() }
 func (f *Fake) FailDelete(status int) { f.mu.Lock(); f.failDelete = status; f.mu.Unlock() }
 func (f *Fake) FailSites(status int)  { f.mu.Lock(); f.failSites = status; f.mu.Unlock() }
+
+func (f *Fake) FailPrivateList(status int) {
+	f.mu.Lock()
+	f.failPrivateList = status
+	f.mu.Unlock()
+}
+
+func (f *Fake) FailPrivateDelete(status int) {
+	f.mu.Lock()
+	f.failPrivateDelete = status
+	f.mu.Unlock()
+}
 
 // AddSite makes a site niceId resolvable, as creating one in Pangolin would.
 func (f *Fake) AddSite(niceID string) {
@@ -79,7 +103,8 @@ func (f *Fake) Applies() int {
 	return len(f.received)
 }
 
-// Resources returns the resources the instance currently holds, keyed by niceId.
+// Resources returns the public resources the instance currently holds, keyed by
+// niceId.
 func (f *Fake) Resources() map[string]pangolin.PublicResource {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -89,6 +114,40 @@ func (f *Fake) Resources() map[string]pangolin.PublicResource {
 		out[k] = v
 	}
 	return out
+}
+
+// PrivateResources returns the private resources the instance currently holds.
+func (f *Fake) PrivateResources() map[string]pangolin.PrivateResource {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make(map[string]pangolin.PrivateResource, len(f.privateResources))
+	for k, v := range f.privateResources {
+		out[k] = v
+	}
+	return out
+}
+
+// PrivateDeleted returns the siteResourceIds deleted so far, in order.
+func (f *Fake) PrivateDeleted() []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int(nil), f.privateDeleted...)
+}
+
+// SeedPrivate adds a private resource as if an earlier apply had created it.
+func (f *Fake) SeedPrivate(niceID string, r pangolin.PrivateResource) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.privateResources[niceID] = r
+	if id, ok := f.privateIDs[niceID]; ok {
+		return id
+	}
+	id := f.nextPrivateID
+	f.nextPrivateID++
+	f.privateIDs[niceID] = id
+	return id
 }
 
 // Deleted returns the resource ids deleted so far, in order.
@@ -122,8 +181,10 @@ func (f *Fake) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /v1/org/{orgId}/blueprint", f.handleApply)
 	mux.HandleFunc("GET /v1/org/{orgId}/public-resources", f.handleList)
+	mux.HandleFunc("GET /v1/org/{orgId}/private-resources", f.handlePrivateList)
 	mux.HandleFunc("GET /v1/org/{orgId}/sites", f.handleSites)
 	mux.HandleFunc("DELETE /v1/public-resource/{id}", f.handleDelete)
+	mux.HandleFunc("DELETE /v1/private-resource/{id}", f.handlePrivateDelete)
 
 	// Control plane for e2e, where the fake runs as a pod and the test cannot
 	// call the Go API directly.
@@ -188,8 +249,32 @@ func (f *Fake) handleApply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// full-domain must be unique across the instance; a real apply rejects the
-	// whole document rather than applying it partially.
+	// Required fields Pangolin's schema refuses to default.
+	for _, key := range sortedKeys(bp.PrivateResources) {
+		res := bp.PrivateResources[key]
+		switch {
+		case res.Name == "":
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("Too small: expected string to have >=1 characters "+
+					"at \"private-resources.%s.name\"", key))
+			return
+		case res.Mode == "":
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("Invalid option at \"private-resources.%s.mode\"", key))
+			return
+		// destination is required for every mode but ssh with a native
+		// auth-daemon, and inference.
+		case res.Destination == "":
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("destination is required unless mode is 'ssh' with auth-daemon "+
+					"mode 'native', or mode is 'inference' (resource %s)", key))
+			return
+		}
+	}
+
+	// full-domain is unique per section: Pangolin checks proxy-resources and
+	// client-resources against themselves. A real apply rejects the whole
+	// document rather than applying it partially.
 	seen := map[string]string{}
 	for key, res := range bp.PublicResources {
 		if res.FullDomain == "" {
@@ -202,6 +287,21 @@ func (f *Fake) handleApply(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		seen[res.FullDomain] = key
+	}
+
+	seenPrivate := map[string]string{}
+	for _, key := range sortedKeys(bp.PrivateResources) {
+		domain := bp.PrivateResources[key].FullDomain
+		if domain == "" {
+			continue
+		}
+		if other, dup := seenPrivate[domain]; dup {
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("Duplicate 'full-domain' values found: %s (%s, %s)",
+					domain, other, key))
+			return
+		}
+		seenPrivate[domain] = key
 	}
 
 	f.mu.Lock()
@@ -219,12 +319,38 @@ func (f *Fake) handleApply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	for _, key := range sortedKeys(bp.PrivateResources) {
+		for _, site := range bp.PrivateResources[key].Sites {
+			if site != "" && !f.knownSite(site) {
+				writeError(w, http.StatusBadRequest,
+					fmt.Sprintf("No valid sites found for private resource %s in org (site %s)",
+						key, site))
+				return
+			}
+		}
+	}
+
 	f.received = append(f.received, bp)
 	// Additive without prune: this is exactly the gap the controller exists to close.
 	for key, res := range bp.PublicResources {
 		f.put(key, res)
 	}
+	for key, res := range bp.PrivateResources {
+		f.putPrivate(key, res)
+	}
 	writeOK(w, http.StatusCreated, "Blueprint applied successfully", nil)
+}
+
+// putPrivate assumes the lock is held.
+func (f *Fake) putPrivate(niceID string, r pangolin.PrivateResource) int {
+	f.privateResources[niceID] = r
+	if id, ok := f.privateIDs[niceID]; ok {
+		return id
+	}
+	id := f.nextPrivateID
+	f.nextPrivateID++
+	f.privateIDs[niceID] = id
+	return id
 }
 
 func (f *Fake) handleList(w http.ResponseWriter, r *http.Request) {
@@ -264,6 +390,50 @@ func (f *Fake) handleList(w http.ResponseWriter, r *http.Request) {
 
 	writeOK(w, http.StatusOK, "Resources retrieved successfully", map[string]any{
 		"resources": rows[start:end],
+		"pagination": map[string]int{
+			"total":    len(rows),
+			"pageSize": size,
+			"page":     page,
+		},
+	})
+}
+
+// handlePrivateList serves the private listing in Pangolin's own spelling: rows
+// under siteResources, the numeric id named siteResourceId.
+func (f *Fake) handlePrivateList(w http.ResponseWriter, r *http.Request) {
+	if !f.authorised(w, r) {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if status := f.failPrivateList; status != 0 {
+		writeError(w, status, "private listing failed on request")
+		return
+	}
+
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	size, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
+	if size < 1 {
+		size = 20
+	}
+
+	rows := make([]map[string]any, 0, len(f.privateResources))
+	for _, niceID := range sortedKeys(f.privateResources) {
+		rows = append(rows, map[string]any{
+			"siteResourceId": f.privateIDs[niceID],
+			"niceId":         niceID,
+		})
+	}
+
+	start := min((page-1)*size, len(rows))
+	end := min(start+size, len(rows))
+
+	writeOK(w, http.StatusOK, "Site resources retrieved successfully", map[string]any{
+		"siteResources": rows[start:end],
 		"pagination": map[string]int{
 			"total":    len(rows),
 			"pageSize": size,
@@ -337,6 +507,37 @@ func (f *Fake) handleDelete(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotFound, "resource not found")
 }
 
+func (f *Fake) handlePrivateDelete(w http.ResponseWriter, r *http.Request) {
+	if !f.authorised(w, r) {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if status := f.failPrivateDelete; status != 0 {
+		writeError(w, status, "private delete failed on request")
+		return
+	}
+
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "site resource id is not a number")
+		return
+	}
+
+	for niceID, known := range f.privateIDs {
+		if known != id {
+			continue
+		}
+		delete(f.privateResources, niceID)
+		delete(f.privateIDs, niceID)
+		f.privateDeleted = append(f.privateDeleted, id)
+		writeOK(w, http.StatusOK, "Site resource deleted successfully", nil)
+		return
+	}
+	writeError(w, http.StatusNotFound, "site resource not found")
+}
+
 func (f *Fake) handleControlFail(w http.ResponseWriter, r *http.Request) {
 	status, _ := strconv.Atoi(r.URL.Query().Get("status"))
 	switch r.URL.Query().Get("on") {
@@ -346,8 +547,13 @@ func (f *Fake) handleControlFail(w http.ResponseWriter, r *http.Request) {
 		f.FailList(status)
 	case "delete":
 		f.FailDelete(status)
+	case "private-list":
+		f.FailPrivateList(status)
+	case "private-delete":
+		f.FailPrivateDelete(status)
 	default:
-		writeError(w, http.StatusBadRequest, "on must be apply, list or delete")
+		writeError(w, http.StatusBadRequest,
+			"on must be apply, list, delete, private-list or private-delete")
 		return
 	}
 	writeOK(w, http.StatusOK, "ok", nil)
@@ -358,9 +564,11 @@ func (f *Fake) handleControlState(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 
 	writeOK(w, http.StatusOK, "ok", map[string]any{
-		"resources": f.resources,
-		"applies":   len(f.received),
-		"deleted":   f.deleted,
+		"resources":        f.resources,
+		"privateResources": f.privateResources,
+		"applies":          len(f.received),
+		"deleted":          f.deleted,
+		"privateDeleted":   f.privateDeleted,
 	})
 }
 

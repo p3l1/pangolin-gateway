@@ -219,3 +219,134 @@ func TestNewHTTPClientRejectsIncompleteOptions(t *testing.T) {
 		})
 	}
 }
+
+// The private listing is a different endpoint on a different table, and spells
+// the numeric id siteResourceId. The prune needs the same two fields either way.
+func TestListPrivateResourcesNormalisesTheSiteResourceID(t *testing.T) {
+	var paths []string
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		_, _ = fmt.Fprint(w, `{"success":true,"error":false,"message":"ok","status":200,"data":{
+			"siteResources":[
+				{"siteResourceId":7,"niceId":"gw-demo-web"},
+				{"siteResourceId":8,"niceId":"handwritten"}],
+			"pagination":{"total":2,"pageSize":100,"page":1}}}`)
+	}))
+
+	got, err := c.ListPrivateResources(context.Background())
+	if err != nil {
+		t.Fatalf("ListPrivateResources: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("got %d resources, want 2: %+v", len(got), got)
+	}
+	want := map[string]int{"gw-demo-web": 7, "handwritten": 8}
+	for _, r := range got {
+		if want[r.NiceID] != r.ResourceID {
+			t.Errorf("resource %q has id %d, want %d", r.NiceID, r.ResourceID, want[r.NiceID])
+		}
+	}
+	for _, p := range paths {
+		if want := "/v1/org/test-org/private-resources"; p != want {
+			t.Errorf("listing path = %s, want %s", p, want)
+		}
+	}
+}
+
+func TestListPrivateResourcesFollowsPagination(t *testing.T) {
+	pages := map[string]string{
+		"1": `{"success":true,"error":false,"message":"ok","status":200,"data":{
+			"siteResources":[{"siteResourceId":1,"niceId":"gw-a-one"}],
+			"pagination":{"total":2,"pageSize":1,"page":1}}}`,
+		"2": `{"success":true,"error":false,"message":"ok","status":200,"data":{
+			"siteResources":[{"siteResourceId":2,"niceId":"gw-b-two"}],
+			"pagination":{"total":2,"pageSize":1,"page":2}}}`,
+	}
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		if page == "" {
+			page = "1"
+		}
+		body, ok := pages[page]
+		if !ok {
+			t.Errorf("unexpected page %q", page)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = fmt.Fprint(w, body)
+	}))
+
+	got, err := c.ListPrivateResources(context.Background())
+	if err != nil {
+		t.Fatalf("ListPrivateResources: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("got %d resources, want 2 across both pages: %+v", len(got), got)
+	}
+}
+
+func TestListPrivateResourcesStopsOnAStallingPage(t *testing.T) {
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"success":true,"error":false,"message":"ok","status":200,"data":{
+			"siteResources":[{"siteResourceId":1,"niceId":"gw-a-one"}],
+			"pagination":{"total":99,"pageSize":1,"page":1}}}`)
+	}))
+
+	if got, err := c.ListPrivateResources(context.Background()); err == nil {
+		t.Fatalf("want an error when the listing stalls, got %d resources", len(got))
+	}
+}
+
+func TestDeletePrivateResourceUsesTheNumericID(t *testing.T) {
+	var gotMethod, gotPath string
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		_, _ = fmt.Fprint(w, `{"success":true,"error":false,"message":"deleted","status":200,"data":{}}`)
+	}))
+
+	if err := c.DeletePrivateResource(context.Background(), 7); err != nil {
+		t.Fatalf("DeletePrivateResource: %v", err)
+	}
+
+	if gotMethod != http.MethodDelete {
+		t.Errorf("method = %s, want DELETE", gotMethod)
+	}
+	if want := "/v1/private-resource/7"; gotPath != want {
+		t.Errorf("path = %s, want %s", gotPath, want)
+	}
+}
+
+// A key missing one of the new actions denies only that call, which looks
+// exactly like a bad key or a wrong endpoint unless the error names the action.
+func TestPrivateResourceAuthErrorsNameTheirAction(t *testing.T) {
+	for action, call := range map[string]func(Client) error{
+		"listSiteResources": func(c Client) error {
+			_, err := c.ListPrivateResources(context.Background())
+			return err
+		},
+		"deleteSiteResource": func(c Client) error {
+			return c.DeletePrivateResource(context.Background(), 7)
+		},
+	} {
+		t.Run(action, func(t *testing.T) {
+			c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = fmt.Fprint(w, `{"success":false,"error":true,"message":"denied",`+
+					`"status":403,"data":null}`)
+			}))
+
+			err := call(c)
+			if err == nil {
+				t.Fatal("want an error")
+			}
+			var authErr *AuthError
+			if !errors.As(err, &authErr) {
+				t.Fatalf("error %v is not an *AuthError", err)
+			}
+			if !strings.Contains(err.Error(), action) {
+				t.Errorf("error %q does not name the %q action", err, action)
+			}
+		})
+	}
+}

@@ -4,6 +4,7 @@ package pangolin
 
 import (
 	"context"
+	"sort"
 
 	"github.com/go-logr/logr"
 )
@@ -23,12 +24,22 @@ func NewDryRun(inner Client, log logr.Logger) *DryRun {
 }
 
 func (d *DryRun) ApplyBlueprint(_ context.Context, bp Blueprint) error {
-	keys := make([]string, 0, len(bp.PublicResources))
-	for k := range bp.PublicResources {
+	public := keysOf(bp.PublicResources)
+	private := keysOf(bp.PrivateResources)
+
+	d.Log.Info("dry run: would apply blueprint",
+		"publicResources", len(public), "publicKeys", public,
+		"privateResources", len(private), "privateKeys", private)
+	return nil
+}
+
+func keysOf[T any](m map[string]T) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
 		keys = append(keys, k)
 	}
-	d.Log.Info("dry run: would apply blueprint", "resources", len(keys), "keys", keys)
-	return nil
+	sort.Strings(keys)
+	return keys
 }
 
 // Reads pass through: the dry run must still show which resources the prune
@@ -37,11 +48,20 @@ func (d *DryRun) ListPublicResources(ctx context.Context) ([]Resource, error) {
 	return d.Inner.ListPublicResources(ctx)
 }
 
+func (d *DryRun) ListPrivateResources(ctx context.Context) ([]Resource, error) {
+	return d.Inner.ListPrivateResources(ctx)
+}
+
 func (d *DryRun) ListSites(ctx context.Context) ([]Site, error) {
 	return d.Inner.ListSites(ctx)
 }
 
 func (d *DryRun) DeletePublicResource(_ context.Context, id int) error {
 	d.Log.Info("dry run: would delete public resource", "resourceId", id)
+	return nil
+}
+
+func (d *DryRun) DeletePrivateResource(_ context.Context, id int) error {
+	d.Log.Info("dry run: would delete private resource", "siteResourceId", id)
 	return nil
 }

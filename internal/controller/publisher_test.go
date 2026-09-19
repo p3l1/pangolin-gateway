@@ -697,3 +697,150 @@ func TestReconcileRejectsOnlyTheRouteWithABadAccessRule(t *testing.T) {
 		t.Errorf("reason = %q, want UnsupportedValue", accepted.Reason)
 	}
 }
+
+func (h *harness) newPrivateRoute(name, hostname string) *gatewayv1.HTTPRoute {
+	r := h.newRoute(name, hostname)
+	r.Annotations = map[string]string{gateway.AnnotationVisibility: gateway.VisibilityPrivate}
+	return r
+}
+
+func TestReconcilePublishesAPrivateRoute(t *testing.T) {
+	h := newHarness(t)
+	h.setupClassAndGateway(t, "pangolin")
+
+	r := h.newPrivateRoute("web", "web.example.com")
+	r.Annotations[gateway.AnnotationRoles] = "Member"
+	h.create(t, r)
+
+	h.mustReconcile(t)
+
+	if _, ok := h.fake.Resources()["gw-demo-web"]; ok {
+		t.Error("a private route reached the public section")
+	}
+	entry, ok := h.fake.PrivateResources()["gw-demo-web"]
+	if !ok {
+		t.Fatalf("route not published; fake holds %v", h.fake.PrivateResources())
+	}
+	if got, want := entry.Destination, "web.demo.svc.cluster.local"; got != want {
+		t.Errorf("destination = %q, want %q", got, want)
+	}
+	if got, want := entry.DestinationPort, int32(8080); got != want {
+		t.Errorf("destination-port = %d, want %d", got, want)
+	}
+	if len(entry.Sites) != 1 || entry.Sites[0] != "test-site" {
+		t.Errorf("sites = %v, want [test-site]", entry.Sites)
+	}
+	if len(entry.Roles) != 1 || entry.Roles[0] != "Member" {
+		t.Errorf("roles = %v, want [Member]", entry.Roles)
+	}
+
+	accepted := conditionOf(t, h.routeConditions(t, "web"),
+		string(gatewayv1.RouteConditionAccepted))
+	if accepted.Status != metav1.ConditionTrue {
+		t.Errorf("Accepted = %+v, want True", accepted)
+	}
+}
+
+// Private resources are absent from the public listing, so without the second
+// endpoint the prune would never see one, let alone remove it.
+func TestReconcilePrunesAPrivateResourceWhoseRouteIsGone(t *testing.T) {
+	h := newHarness(t)
+	h.setupClassAndGateway(t, "pangolin")
+
+	id := h.fake.SeedPrivate("gw-demo-orphan", pangolin.PrivateResource{
+		Name: "demo/orphan", Mode: pangolin.ModeHTTP,
+		Destination: "orphan.demo.svc.cluster.local", FullDomain: "orphan.example.com",
+	})
+
+	h.mustReconcile(t)
+
+	if _, ok := h.fake.PrivateResources()["gw-demo-orphan"]; ok {
+		t.Errorf("the orphan survived; fake holds %v", h.fake.PrivateResources())
+	}
+	if got := h.fake.PrivateDeleted(); len(got) != 1 || got[0] != id {
+		t.Errorf("privateDeleted = %v, want [%d]", got, id)
+	}
+}
+
+// Each section is keyed independently, so the prune must not delete a public
+// resource because a private one shares its numeric id.
+func TestReconcilePrunesEachSectionAgainstItsOwnListing(t *testing.T) {
+	h := newHarness(t)
+	h.setupClassAndGateway(t, "pangolin")
+
+	publicID := h.fake.Seed("gw-demo-keep", pangolin.PublicResource{
+		Name: "demo/keep", Mode: pangolin.ModeHTTP, FullDomain: "keep.example.com",
+	})
+	privateID := h.fake.SeedPrivate("gw-demo-orphan", pangolin.PrivateResource{
+		Name: "demo/orphan", Mode: pangolin.ModeHTTP,
+		Destination: "orphan.demo.svc.cluster.local", FullDomain: "orphan.example.com",
+	})
+	if publicID != privateID {
+		t.Fatalf("ids are %d and %d; this test needs them to collide", publicID, privateID)
+	}
+
+	// The public one has no route either, so both go — but each through its own
+	// endpoint, and the recorded ids must land in the matching list.
+	h.mustReconcile(t)
+
+	if got := h.fake.Deleted(); len(got) != 1 || got[0] != publicID {
+		t.Errorf("deleted = %v, want [%d] through the public endpoint", got, publicID)
+	}
+	if got := h.fake.PrivateDeleted(); len(got) != 1 || got[0] != privateID {
+		t.Errorf("privateDeleted = %v, want [%d] through the private endpoint", got, privateID)
+	}
+}
+
+// The two listings are independent, so one failing says nothing about which
+// resources the other section still wants.
+func TestReconcilePrunesPublicResourcesWhenThePrivateListingFails(t *testing.T) {
+	h := newHarness(t)
+	h.setupClassAndGateway(t, "pangolin")
+
+	id := h.fake.Seed("gw-demo-orphan", pangolin.PublicResource{
+		Name: "demo/orphan", Mode: pangolin.ModeHTTP, FullDomain: "orphan.example.com",
+	})
+	h.fake.FailPrivateList(http.StatusForbidden)
+
+	if err := h.reconcile(t); err == nil {
+		t.Error("the failing private listing was swallowed; it must surface for a retry")
+	}
+
+	if got := h.fake.Deleted(); len(got) != 1 || got[0] != id {
+		t.Errorf("deleted = %v, want [%d]: the public prune must still run", got, id)
+	}
+}
+
+// Flipping visibility gives the route a resource in the other section; the one
+// it left behind is no longer claimed and must go.
+func TestReconcileMovesARouteBetweenSections(t *testing.T) {
+	h := newHarness(t)
+	h.setupClassAndGateway(t, "pangolin")
+	h.create(t, h.newRoute("web", "web.example.com"))
+
+	h.mustReconcile(t)
+	if _, ok := h.fake.Resources()["gw-demo-web"]; !ok {
+		t.Fatalf("route not published publicly; fake holds %v", h.fake.Resources())
+	}
+
+	var live gatewayv1.HTTPRoute
+	key := types.NamespacedName{Namespace: h.namespace, Name: "web"}
+	if err := h.client.Get(h.ctx, key, &live); err != nil {
+		t.Fatalf("getting route: %v", err)
+	}
+	live.Annotations = map[string]string{
+		gateway.AnnotationVisibility: gateway.VisibilityPrivate,
+	}
+	if err := h.client.Update(h.ctx, &live); err != nil {
+		t.Fatalf("updating route: %v", err)
+	}
+
+	h.mustReconcile(t)
+
+	if _, ok := h.fake.PrivateResources()["gw-demo-web"]; !ok {
+		t.Errorf("not published privately; fake holds %v", h.fake.PrivateResources())
+	}
+	if _, ok := h.fake.Resources()["gw-demo-web"]; ok {
+		t.Error("the public resource survived the move; the hostname stays claimed twice")
+	}
+}
