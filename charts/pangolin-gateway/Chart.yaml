@@ -2,10 +2,13 @@ apiVersion: v2
 name: pangolin-gateway
 description: Kubernetes controller publishing Gateway API HTTPRoutes as Pangolin resources
 type: application
-# Both lines are rewritten by release-please; just verify asserts they match.
 version: 0.1.0
-appVersion: "0.1.0"
+appVersion: 0.1.0
 home: https://github.com/p3l1/pangolin-gateway
 sources:
   - https://github.com/p3l1/pangolin-gateway
-keywords: [gateway-api, pangolin, tunnel, ingress]
+keywords:
+  - gateway-api
+  - pangolin
+  - tunnel
+  - ingress
