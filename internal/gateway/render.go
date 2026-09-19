@@ -6,6 +6,7 @@ package gateway
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,6 +20,19 @@ import (
 const (
 	AnnotationSSO  = "pangolin.p3l1.de/sso"
 	AnnotationSite = "pangolin.p3l1.de/site"
+
+	// A healthcheck path switches the check on; the other two only tune it.
+	// Hostname and port are not annotations: a check against an address other
+	// than the target's would not describe that target.
+	AnnotationHealthcheckPath     = "pangolin.p3l1.de/healthcheck-path"
+	AnnotationHealthcheckInterval = "pangolin.p3l1.de/healthcheck-interval"
+	AnnotationHealthcheckTimeout  = "pangolin.p3l1.de/healthcheck-timeout"
+)
+
+// Pangolin's own defaults, restated so the blueprint says what it means.
+const (
+	DefaultHealthcheckInterval = 30
+	DefaultHealthcheckTimeout  = 5
 )
 
 // KeyPrefix scopes everything this controller owns. The prune touches nothing
@@ -289,17 +303,25 @@ func translate(
 			"site %q does not exist in this Pangolin organisation", site)
 	}
 
+	target := pangolin.Target{
+		Site:     site,
+		Method:   pangolin.MethodHTTP,
+		Hostname: fmt.Sprintf("%s.%s.svc.cluster.local", backend.Name, r.Namespace),
+		Port:     int32(*backend.Port),
+	}
+
+	healthcheck, err := healthcheckFor(r, target)
+	if err != nil {
+		return fail(gatewayv1.RouteReasonUnsupportedValue, "%s", err)
+	}
+	target.Healthcheck = healthcheck
+
 	resource := pangolin.PublicResource{
 		Name:       r.Namespace + "/" + r.Name,
 		Mode:       pangolin.ModeHTTP,
 		FullDomain: host,
 		Auth:       &pangolin.Auth{SSOEnabled: sso},
-		Targets: []pangolin.Target{{
-			Site:     site,
-			Method:   pangolin.MethodHTTP,
-			Hostname: fmt.Sprintf("%s.%s.svc.cluster.local", backend.Name, r.Namespace),
-			Port:     int32(*backend.Port),
-		}},
+		Targets:    []pangolin.Target{target},
 	}
 	return resource, Key(r.Namespace, r.Name), nil
 }
@@ -336,6 +358,61 @@ func ssoFor(r gatewayv1.HTTPRoute) (bool, error) {
 		return false, fmt.Errorf("annotation %s must be \"true\" or \"false\", got %q",
 			AnnotationSSO, v)
 	}
+}
+
+// healthcheckFor builds the target's check from its annotations. Returning nil
+// without an error means no check was asked for.
+func healthcheckFor(r gatewayv1.HTTPRoute, target pangolin.Target) (*pangolin.Healthcheck, error) {
+	path := r.Annotations[AnnotationHealthcheckPath]
+
+	if path == "" {
+		// Tuning without a path yields no check at all, which is not what the
+		// author expected; say so rather than publishing a route that lacks one.
+		for _, a := range []string{AnnotationHealthcheckInterval, AnnotationHealthcheckTimeout} {
+			if _, set := r.Annotations[a]; set {
+				return nil, fmt.Errorf("%s is set without %s, so no healthcheck would be created",
+					a, AnnotationHealthcheckPath)
+			}
+		}
+		return nil, nil
+	}
+	if !strings.HasPrefix(path, "/") {
+		return nil, fmt.Errorf("annotation %s must start with \"/\", got %q",
+			AnnotationHealthcheckPath, path)
+	}
+
+	interval, err := positiveSeconds(r, AnnotationHealthcheckInterval, DefaultHealthcheckInterval)
+	if err != nil {
+		return nil, err
+	}
+	timeout, err := positiveSeconds(r, AnnotationHealthcheckTimeout, DefaultHealthcheckTimeout)
+	if err != nil {
+		return nil, err
+	}
+
+	return &pangolin.Healthcheck{
+		Hostname: target.Hostname,
+		Port:     target.Port,
+		Path:     path,
+		Interval: interval,
+		Timeout:  timeout,
+	}, nil
+}
+
+func positiveSeconds(r gatewayv1.HTTPRoute, annotation string, fallback int) (int, error) {
+	raw, ok := r.Annotations[annotation]
+	if !ok || raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("annotation %s must be a whole number of seconds, got %q",
+			annotation, raw)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("annotation %s must be greater than zero, got %d", annotation, n)
+	}
+	return n, nil
 }
 
 func isRefReason(reason string) bool {

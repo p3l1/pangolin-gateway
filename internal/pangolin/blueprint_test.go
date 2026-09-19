@@ -4,6 +4,7 @@ package pangolin
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -114,5 +115,61 @@ func TestBlueprintWithNoResourcesStillMarshalsTheKey(t *testing.T) {
 	// the explicit "this controller currently owns nothing" statement.
 	if got, want := string(raw), `{"public-resources":{}}`; got != want {
 		t.Errorf("empty blueprint = %s, want %s", got, want)
+	}
+}
+
+func TestHealthcheckMarshalsToPangolinKeys(t *testing.T) {
+	bp := Blueprint{PublicResources: map[string]PublicResource{
+		"gw-demo-web": {
+			Name: "demo/web", Mode: ModeHTTP, FullDomain: "demo.example.com",
+			Targets: []Target{{
+				Hostname: "web.demo.svc.cluster.local",
+				Port:     8080,
+				Healthcheck: &Healthcheck{
+					Hostname: "web.demo.svc.cluster.local",
+					Port:     8080,
+					Path:     "/healthz",
+					Interval: 30,
+					Timeout:  5,
+				},
+			}},
+		},
+	}}
+
+	raw, err := json.Marshal(bp)
+	if err != nil {
+		t.Fatalf("marshalling blueprint: %v", err)
+	}
+
+	var got map[string]map[string]map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshalling blueprint: %v", err)
+	}
+	targets := got["public-resources"]["gw-demo-web"]["targets"].([]any)
+	hc, ok := targets[0].(map[string]any)["healthcheck"].(map[string]any)
+	if !ok {
+		t.Fatalf("no healthcheck object in %s", raw)
+	}
+
+	for key, want := range map[string]any{
+		"hostname": "web.demo.svc.cluster.local",
+		"port":     float64(8080),
+		"path":     "/healthz",
+		"interval": float64(30),
+		"timeout":  float64(5),
+	} {
+		if got := hc[key]; got != want {
+			t.Errorf("healthcheck[%q] = %v, want %v", key, got, want)
+		}
+	}
+}
+
+func TestTargetOmitsAnAbsentHealthcheck(t *testing.T) {
+	raw, err := json.Marshal(Target{Hostname: "web", Port: 80})
+	if err != nil {
+		t.Fatalf("marshalling target: %v", err)
+	}
+	if strings.Contains(string(raw), "healthcheck") {
+		t.Errorf("target carries a healthcheck key when unset: %s", raw)
 	}
 }

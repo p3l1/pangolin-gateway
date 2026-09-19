@@ -93,8 +93,11 @@ metadata:
   name: web
   namespace: demo
   annotations:
-    pangolin.p3l1.de/sso: "true"     # default; omit to keep SSO on
-    pangolin.p3l1.de/site: edge-site # defaults to --default-site
+    pangolin.p3l1.de/sso: "true"              # default; omit to keep SSO on
+    pangolin.p3l1.de/site: edge-site          # defaults to --default-site
+    pangolin.p3l1.de/healthcheck-path: /healthz  # switches the check on
+    pangolin.p3l1.de/healthcheck-interval: "30"  # seconds, optional
+    pangolin.p3l1.de/healthcheck-timeout: "5"    # seconds, optional
 spec:
   parentRefs:
     - name: pangolin
@@ -120,9 +123,14 @@ one `backendRef` to a Service in its own namespace, and no filters. Anything els
 on the route with `Accepted: False` and a reason, rather than published as something it is
 not — silently dropping a redirect filter would proxy the whole domain to one backend.
 
+A healthcheck is optional and off unless `pangolin.p3l1.de/healthcheck-path` is set.
+Its hostname and port always mirror the target's — a check against a different address
+would not describe that target — so only the path and, optionally, the interval and
+timeout are annotated.
+
 Not covered yet: TCPRoute, TLSRoute, `private-resources`, policies, multiple hostnames per
-route, health checks, cross-namespace backends via ReferenceGrant, and listener/
-`allowedRoutes` semantics.
+route, cross-namespace backends via ReferenceGrant, and listener/`allowedRoutes`
+semantics.
 
 ## Status conditions
 
@@ -136,6 +144,7 @@ route, health checks, cross-namespace backends via ReferenceGrant, and listener/
 | Backend is not a Service | `ResolvedRefs: False`, `InvalidKind` |
 | Cross-namespace backendRef | `ResolvedRefs: False`, `RefNotPermitted` |
 | Site does not exist in the organisation | `Accepted: False`, `UnknownSite` |
+| Malformed healthcheck annotation | `Accepted: False`, `UnsupportedValue` |
 | parentRef names no existing Gateway | `Accepted: False`, `NoMatchingParent` |
 
 Conditions are written per parentRef into `status.parents[]`, only on entries belonging to
