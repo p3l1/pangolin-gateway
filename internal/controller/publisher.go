@@ -43,6 +43,11 @@ type Publisher struct {
 	ControllerName string
 	DefaultSite    string
 	ResyncInterval time.Duration
+
+	// DryRun must match the decorator wrapping Pangolin. It only affects status:
+	// reporting a plain Accepted=True while nothing was published would make the
+	// rehearsal look like a successful rollout.
+	DryRun bool
 }
 
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes;gateways;gatewayclasses,verbs=get;list;watch
@@ -127,6 +132,9 @@ func (p *Publisher) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result,
 	} else {
 		publishTotal.WithLabelValues("success").Inc()
 		log.V(1).Info("blueprint applied", "resources", len(blueprint.PublicResources))
+		if p.DryRun {
+			markDryRun(verdicts)
+		}
 	}
 
 	// The prune runs only on a successful apply. Renaming a route produces a new
@@ -303,6 +311,22 @@ func markPublishFailed(verdicts map[types.NamespacedName]gateway.Verdict, err er
 			Status:  metav1.ConditionFalse,
 			Reason:  gateway.ReasonPublishFailed,
 			Message: fmt.Sprintf("publishing to Pangolin failed: %v", err),
+		}
+		verdicts[key] = v
+	}
+}
+
+// markDryRun keeps Accepted true — the route is accepted, it simply was not
+// published — but says so in the reason, so nobody reads a rehearsal as a rollout.
+func markDryRun(verdicts map[types.NamespacedName]gateway.Verdict) {
+	for key, v := range verdicts {
+		if !v.Published() {
+			continue
+		}
+		v.Accepted = gateway.ConditionResult{
+			Status:  metav1.ConditionTrue,
+			Reason:  gateway.ReasonDryRun,
+			Message: "dry run: accepted but not published to Pangolin",
 		}
 		verdicts[key] = v
 	}

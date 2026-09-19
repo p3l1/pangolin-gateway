@@ -32,7 +32,7 @@ const (
 	ReasonDuplicateHostname = "DuplicateHostname"
 	ReasonUnknownSite       = "UnknownSite"
 	ReasonPublishFailed     = "PublishFailed"
-	ReasonPublished         = "Published"
+	ReasonDryRun            = "DryRun"
 )
 
 type Inputs struct {

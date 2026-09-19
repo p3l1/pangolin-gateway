@@ -542,3 +542,22 @@ func TestReconcileKeepsPublishingWhenSitesCannotBeListed(t *testing.T) {
 		t.Error("routes were withheld although only the site listing was unavailable")
 	}
 }
+
+// A rehearsal that reports a plain Accepted=True reads as a successful rollout,
+// which defeats the point of running against a real instance with --dry-run.
+func TestReconcileMarksStatusAsDryRun(t *testing.T) {
+	h := newHarness(t)
+	h.publisher.DryRun = true
+	h.setupClassAndGateway(t, "pangolin")
+	h.create(t, h.newRoute("web", "web.example.com"))
+
+	h.mustReconcile(t)
+
+	c := conditionOf(t, h.routeConditions(t, "web"), string(gatewayv1.RouteConditionAccepted))
+	if c.Status != metav1.ConditionTrue {
+		t.Errorf("Accepted = %+v, want True: the route is accepted, just unpublished", c)
+	}
+	if c.Reason != gateway.ReasonDryRun {
+		t.Errorf("reason = %q, want %q", c.Reason, gateway.ReasonDryRun)
+	}
+}

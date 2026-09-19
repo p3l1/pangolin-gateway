@@ -92,6 +92,7 @@ func main() {
 		ControllerName: manager.ControllerName,
 		DefaultSite:    *defaultSite,
 		ResyncInterval: *resync,
+		DryRun:         *dryRun,
 	}
 	if err := publisher.SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to create controller", "controller", "pangolin-publisher")
