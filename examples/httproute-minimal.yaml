@@ -1,0 +1,32 @@
+# A Gateway on the controller's class, and one route published through it.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: pangolin
+  namespace: demo
+spec:
+  gatewayClassName: pangolin
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: web
+  namespace: demo
+  annotations:
+    # Both optional. sso defaults to "true" so a forgotten annotation cannot
+    # publish a service unprotected; site defaults to the controller's flag.
+    pangolin.p3l1.de/sso: "true"
+    pangolin.p3l1.de/site: edge-site
+spec:
+  parentRefs:
+    - name: pangolin
+  hostnames:
+    - demo.example.com
+  rules:
+    - backendRefs:
+        - name: web
+          port: 8080
