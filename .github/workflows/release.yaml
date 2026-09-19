@@ -1,0 +1,194 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release, e.g. v0.2.0 (release-please creates the tag; this only builds and publishes it)"
+        required: true
+        type: string
+
+env:
+  IMAGE: ghcr.io/p3l1/pangolin-gateway
+  CHART_REGISTRY: oci://ghcr.io/p3l1/charts
+
+# Without this, a bare "run:" step gets "bash -e {0}" — no pipefail, so a
+# failed "helm push" still lets its "tee" exit 0 and the digest parse yields empty.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Resolves the tag once so both trigger kinds agree on what "the release" is:
+  # github.ref_name is the pushed tag on a tag push, but the dispatching branch
+  # on workflow_dispatch, where only the input names the tag to release.
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      - name: Resolve release tag
+        id: resolve
+        run: |
+          tag="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          {
+            echo "tag=${tag}"
+            echo "version=${tag#v}"
+            echo "sha=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+  image:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          sbom: false
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.tag }}
+            COMMIT=${{ needs.prepare.outputs.sha }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digest-${{ strategy.job-index }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  publish:
+    needs: [prepare, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.manifest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create manifest list
+        id: manifest
+        run: |
+          version="${{ needs.prepare.outputs.version }}"
+          cd /tmp/digests
+          docker buildx imagetools create \
+            -t "${IMAGE}:${version}" -t "${IMAGE}:latest" \
+            $(printf "${IMAGE}@sha256:%s " *)
+          digest=$(docker buildx imagetools inspect "${IMAGE}:${version}" --format '{{.Manifest.Digest}}')
+          if [ -z "$digest" ]; then
+            echo "::error::imagetools inspect returned no digest for ${IMAGE}:${version}; the manifest list was not created" >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+      - name: Sign the image
+        run: cosign sign --yes "${IMAGE}@${{ steps.manifest.outputs.digest }}"
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.IMAGE }}@${{ steps.manifest.outputs.digest }}
+          format: spdx-json
+          output-file: controller.sbom.spdx.json
+      - name: Attest the SBOM
+        run: |
+          cosign attest --yes --type spdxjson \
+            --predicate controller.sbom.spdx.json \
+            "${IMAGE}@${{ steps.manifest.outputs.digest }}"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
+          push-to-registry: true
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          files: controller.sbom.spdx.json
+
+  chart:
+    needs: [prepare, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+      # cosign reads the docker config; helm registry login writes its own, so
+      # signing the pushed chart needs this login as well as helm's.
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Package and push
+        id: push
+        run: |
+          version="${{ needs.prepare.outputs.version }}"
+          helm registry login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
+          helm package charts/pangolin-gateway --version "$version" --app-version "$version"
+          helm push "pangolin-gateway-${version}.tgz" "${CHART_REGISTRY}" 2>&1 | tee push.log
+          digest=$(awk '/Digest:/ {print $2}' push.log)
+          if [ -z "$digest" ]; then
+            echo "::error::no digest found in helm push output; the push likely failed (see log above)" >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+      - name: Sign the chart
+        run: |
+          cosign sign --yes "ghcr.io/p3l1/charts/pangolin-gateway@${{ steps.push.outputs.digest }}"

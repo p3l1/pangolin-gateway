@@ -1,0 +1,18 @@
+#!/bin/sh
+# Rejects messages that do not follow Conventional Commits.
+set -e
+
+pattern='^(feat|fix|docs|style|refactor|test|chore|perf|ci|build|revert)(\([a-z0-9._-]+\))?!?: .{1,72}$'
+
+first_line=$(head -1 "$1")
+
+case "$first_line" in
+	"Merge "*|"Revert "*|fixup!*|squash!*) exit 0 ;;
+esac
+
+if ! printf '%s' "$first_line" | grep -Eq "$pattern"; then
+	echo "commit-msg: not a Conventional Commit:" >&2
+	echo "  $first_line" >&2
+	echo "expected: <type>(<scope>): <summary up to 72 chars>" >&2
+	exit 1
+fi

@@ -1,0 +1,33 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  # Lets this job dispatch the release workflow once a tag exists.
+  actions: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # A tag pushed with GITHUB_TOKEN raises no events, so release.yaml's tag
+      # trigger never fires. workflow_dispatch is the documented exception.
+      - name: Build and publish the release
+        if: steps.release.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          echo "release-please created $TAG; dispatching the release workflow"
+          gh workflow run release.yaml --ref main -f tag="$TAG"
+          echo "dispatched; follow it at $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/release.yaml" >> "$GITHUB_STEP_SUMMARY"
