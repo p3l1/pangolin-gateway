@@ -21,6 +21,11 @@ const (
 	AnnotationSSO  = "pangolin.p3l1.de/sso"
 	AnnotationSite = "pangolin.p3l1.de/site"
 
+	// The name Pangolin shows in its dashboard. Defaults to "<namespace>/<name>",
+	// which is unambiguous but not what people call the service; a migrated
+	// resource can keep the name they already recognise.
+	AnnotationName = "pangolin.p3l1.de/display-name"
+
 	// A healthcheck path switches the check on; the other two only tune it.
 	// Hostname and port are not annotations: a check against an address other
 	// than the target's would not describe that target.
@@ -294,6 +299,15 @@ func translate(
 		return fail(gatewayv1.RouteReasonUnsupportedValue, "%s", err)
 	}
 
+	name := r.Namespace + "/" + r.Name
+	if v, ok := r.Annotations[AnnotationName]; ok {
+		if strings.TrimSpace(v) == "" {
+			return fail(gatewayv1.RouteReasonUnsupportedValue,
+				"annotation %s is empty; remove it to fall back to %q", AnnotationName, name)
+		}
+		name = strings.TrimSpace(v)
+	}
+
 	site := defaultSite
 	if v, ok := r.Annotations[AnnotationSite]; ok && v != "" {
 		site = v
@@ -317,7 +331,7 @@ func translate(
 	target.Healthcheck = healthcheck
 
 	resource := pangolin.PublicResource{
-		Name:       r.Namespace + "/" + r.Name,
+		Name:       name,
 		Mode:       pangolin.ModeHTTP,
 		FullDomain: host,
 		Auth:       &pangolin.Auth{SSOEnabled: sso},
