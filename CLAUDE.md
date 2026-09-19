@@ -30,7 +30,8 @@ These are hard constraints, not preferences:
 - `cmd/main.go` — process entry point; wires flags into `manager.Config` and the Pangolin
   client, then starts the controller-runtime manager.
 - `internal/gateway/` — `render.go` turns Gateway API objects into a blueprint and a verdict
-  per route; `status.go` writes those verdicts into `status.parents`. Both are pure.
+  per route; `status.go` writes those verdicts into `status.parents`. Both are pure. The
+  five `pangolin.p3l1.de/` annotations it reads are declared at the top of `render.go`.
 - `internal/pangolin/` — the Integration API client behind a four-method interface, the
   blueprint types, and the dry-run decorator.
 - `internal/controller/publisher.go` — the single reconciler, plus its metrics.

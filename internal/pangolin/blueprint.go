@@ -34,10 +34,22 @@ type Auth struct {
 }
 
 type Target struct {
-	Site     string `json:"site,omitempty"`
-	Method   string `json:"method,omitempty"`
+	Site        string       `json:"site,omitempty"`
+	Method      string       `json:"method,omitempty"`
+	Hostname    string       `json:"hostname"`
+	Port        int32        `json:"port"`
+	Healthcheck *Healthcheck `json:"healthcheck,omitempty"`
+}
+
+// Healthcheck stops Pangolin routing to a target that has stopped answering.
+// Hostname and port are required by the schema and always mirror the target's,
+// since a check against a different address would not describe this target.
+type Healthcheck struct {
 	Hostname string `json:"hostname"`
 	Port     int32  `json:"port"`
+	Path     string `json:"path"`
+	Interval int    `json:"interval"`
+	Timeout  int    `json:"timeout"`
 }
 
 // Site is one row of the sites listing. Only the niceId matters here: it is what

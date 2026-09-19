@@ -561,3 +561,34 @@ func TestReconcileMarksStatusAsDryRun(t *testing.T) {
 		t.Errorf("reason = %q, want %q", c.Reason, gateway.ReasonDryRun)
 	}
 }
+
+// The healthcheck has to survive the whole path: annotation, render, JSON, wire.
+func TestReconcilePublishesAHealthcheck(t *testing.T) {
+	h := newHarness(t)
+	h.setupClassAndGateway(t, "pangolin")
+
+	r := h.newRoute("web", "web.example.com")
+	r.Annotations = map[string]string{
+		gateway.AnnotationHealthcheckPath:     "/healthz",
+		gateway.AnnotationHealthcheckInterval: "15",
+	}
+	h.create(t, r)
+
+	h.mustReconcile(t)
+
+	entry, ok := h.fake.Resources()["gw-demo-web"]
+	if !ok {
+		t.Fatalf("route not published; fake holds %v", h.fake.Resources())
+	}
+	hc := entry.Targets[0].Healthcheck
+	if hc == nil {
+		t.Fatal("the healthcheck did not reach the fake")
+	}
+	if hc.Path != "/healthz" || hc.Interval != 15 || hc.Timeout != gateway.DefaultHealthcheckTimeout {
+		t.Errorf("healthcheck = %+v, want path /healthz, interval 15, default timeout", hc)
+	}
+	if hc.Hostname != entry.Targets[0].Hostname || hc.Port != entry.Targets[0].Port {
+		t.Errorf("healthcheck addresses %s:%d, want the target's %s:%d",
+			hc.Hostname, hc.Port, entry.Targets[0].Hostname, entry.Targets[0].Port)
+	}
+}
