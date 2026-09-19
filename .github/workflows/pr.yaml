@@ -12,8 +12,12 @@ on:
 permissions:
   contents: read
 
+# A title correction raises "edited", which must not cancel the code checks
+# already running for the same ref: those jobs skip on "edited", so the cancelled
+# run would be replaced by one reporting success having tested nothing. Title and
+# code therefore cancel only their own kind.
 concurrency:
-  group: pr-${{ github.ref }}
+  group: pr-${{ github.ref }}-${{ github.event.action == 'edited' && 'title' || 'code' }}
   cancel-in-progress: true
 
 # Without this, a bare "run:" step gets "bash -e {0}" — no pipefail, so a
