@@ -75,7 +75,21 @@ lint:
 # run against are the ones go.mod pins rather than a separately drifting copy.
 # "{{{{" escapes to a literal "{{"; the closing braces need no escaping.
 gateway-crds:
-    @echo "$(go list -m -f '{{{{.Dir}}' sigs.k8s.io/gateway-api)/config/crd/standard"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # go list prints an empty Dir for a module that is not in the cache yet, which
+    # would silently yield "/config/crd/standard" and fail much later as a missing
+    # CRD directory. Download first, then insist on a real path.
+    dir=$(go list -m -f '{{{{.Dir}}' sigs.k8s.io/gateway-api)
+    if [ -z "$dir" ]; then
+        go mod download sigs.k8s.io/gateway-api >&2
+        dir=$(go list -m -f '{{{{.Dir}}' sigs.k8s.io/gateway-api)
+    fi
+    if [ -z "$dir" ] || [ ! -d "$dir/config/crd/standard" ]; then
+        echo "cannot locate the Gateway API CRDs (module dir: '${dir:-empty}')" >&2
+        exit 1
+    fi
+    echo "$dir/config/crd/standard"
 
 # Fast tier: seconds, run on every change.
 check: fmt-check vet lint
@@ -148,7 +162,11 @@ cluster-up:
     #!/usr/bin/env bash
     set -euo pipefail
     if ! k3d cluster list {{cluster}} >/dev/null 2>&1; then
-        k3d cluster create {{cluster}} --image {{k3s_image}} --agents 0 --wait
+        # k3s installs Traefik through Helm, and its chart ships its own Gateway API
+        # CRDs. Leaving it on races this recipe for ownership of those CRDs — the
+        # apply below then fails with "conflicts with helm" — and would decide the
+        # Gateway API version out from under go.mod. Nothing here needs Traefik.
+        k3d cluster create {{cluster}} --image {{k3s_image}} --agents 0 --wait             --k3s-arg "--disable=traefik@server:*"
     fi
     kubectl --context k3d-{{cluster}} cluster-info
     kubectl --context k3d-{{cluster}} apply --server-side -f "$(just gateway-crds)"
