@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.0](https://github.com/p3l1/pangolin-gateway/compare/v0.4.0...v0.5.0) (2026-09-20)
+
+
+### Features
+
+* let a healthcheck name the status it expects ([#20](https://github.com/p3l1/pangolin-gateway/issues/20)) ([6286ce7](https://github.com/p3l1/pangolin-gateway/commit/6286ce71bb3ae641062df16f0e0ab5142ca2a2fc))
+* let a healthcheck verify the port instead of the response ([#21](https://github.com/p3l1/pangolin-gateway/issues/21)) ([27937a9](https://github.com/p3l1/pangolin-gateway/commit/27937a977e7ad7a16882597367db3c6e9b7cdda0))
+* protect a public route with generated basic auth credentials ([#22](https://github.com/p3l1/pangolin-gateway/issues/22)) ([34d8653](https://github.com/p3l1/pangolin-gateway/commit/34d865362db12737ce1be759721ed3130fb283b9))
+
 ## [0.4.0](https://github.com/p3l1/pangolin-gateway/compare/v0.3.0...v0.4.0) (2026-09-20)
 
 
