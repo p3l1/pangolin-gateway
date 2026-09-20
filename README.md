@@ -134,7 +134,7 @@ Pangolin stops routing to a target that has stopped answering. The check is off 
 ```yaml
 metadata:
   annotations:
-    pangolin.p3l1.de/healthcheck-path: /api/webhook          # switches the check on
+    pangolin.p3l1.de/healthcheck-path: /api/webhook          # switches an HTTP check on
     pangolin.p3l1.de/healthcheck-status: "400"               # expected code; default is any 2xx
     pangolin.p3l1.de/healthcheck-method: HEAD                # default GET
     pangolin.p3l1.de/healthcheck-follow-redirects: "false"   # default true
@@ -144,6 +144,34 @@ metadata:
 
 Hostname and port are not annotations: a check against an address other than the
 target's would not describe that target.
+
+### Two strategies
+
+`pangolin.p3l1.de/healthcheck-mode` chooses between them, `http` (the default) and
+`tcp`:
+
+```yaml
+metadata:
+  annotations:
+    pangolin.p3l1.de/healthcheck-mode: tcp     # switches the check on by itself
+    pangolin.p3l1.de/healthcheck-timeout: "2"  # seconds, default 5
+```
+
+A TCP check opens a connection and claims nothing more: the port is accepting. It is
+the honest description of a target that has no path answering 2xx at all — ArgoCD's
+ApplicationSet webhook again, whose only route answers 400. `healthcheck-status`
+describes that endpoint more precisely; `healthcheck-mode: tcp` describes it more
+modestly, and one of the two is always better than a check that is permanently red.
+
+In `tcp` mode the annotations that describe a response — `healthcheck-path`,
+`-status`, `-method` and `-follow-redirects` — are **rejected rather than ignored**,
+because a check that quietly drops half of what it was asked for is the failure this
+controller exists to avoid. In `http` mode the path is still required: the mode names
+the strategy, not what to request.
+
+`snmp` and `icmp` appear in Pangolin's dashboard but are rejected here. They are a
+paid feature its agent does not implement, and an unknown mode makes the agent fall
+back to HTTP — so a route asking for one would silently get something else.
 
 **`healthcheck-status` exists because "healthy" and "answers 2xx" are not the same
 claim.** ArgoCD's ApplicationSet webhook answers 400 on its only route and 404

@@ -11,6 +11,15 @@ const (
 	ModeHTTP = "http"
 )
 
+// Healthcheck strategies. Pangolin takes any string here and its agent falls
+// back to HTTP for one it does not know, so an unknown value checks something
+// other than what it says. The dashboard also offers snmp and icmp, which are
+// a paid feature and which the agent does not implement.
+const (
+	HealthcheckModeHTTP = "http"
+	HealthcheckModeTCP  = "tcp"
+)
+
 // Target methods, the scheme Pangolin uses to reach a backend.
 const (
 	MethodHTTP = "http"
@@ -106,12 +115,18 @@ type Target struct {
 type Healthcheck struct {
 	Hostname string `json:"hostname"`
 	Port     int32  `json:"port"`
-	Path     string `json:"path"`
 	Interval int    `json:"interval"`
 	Timeout  int    `json:"timeout"`
 
-	// Never omitted. Pangolin discards a check whose method is empty before it
-	// reaches the agent, so the check would sit in its database and never run.
+	// Never omitted: Pangolin defaults an absent mode to http, which would keep
+	// checking a response body on a target that asked for a plain connection.
+	Mode string `json:"mode"`
+
+	// Empty for a TCP check, which reads no response. Pangolin needs it for an
+	// HTTP one and discards a check that has none before it ever runs.
+	Path string `json:"path"`
+
+	// Empty for a TCP check, for the same reason as Path.
 	Method string `json:"method"`
 
 	// Zero means any 2xx. Never omitted: Pangolin skips a column its document

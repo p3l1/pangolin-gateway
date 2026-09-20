@@ -241,6 +241,10 @@ func TestRenderRejectsAnnotationsAPrivateResourceCannotHonour(t *testing.T) {
 			map[string]string{AnnotationHealthcheckFollowRedirects: "false"},
 			AnnotationHealthcheckFollowRedirects,
 		},
+		"healthcheck mode": {
+			map[string]string{AnnotationHealthcheckMode: pangolin.HealthcheckModeTCP},
+			AnnotationHealthcheckMode,
+		},
 		"access rules": {
 			map[string]string{
 				AnnotationAccessRules: "- action: allow\n  match: path\n  value: /x\n",
