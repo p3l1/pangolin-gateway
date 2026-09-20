@@ -47,6 +47,12 @@ type Inputs struct {
 	ControllerName string
 	DefaultSite    string
 
+	// BasicAuth carries the credentials the reconciler resolved for the routes
+	// that asked for them, keyed by route. Resolving them is I/O, which this
+	// package does not do; a missing entry rejects the route rather than
+	// publishing it without the protection it asked for.
+	BasicAuth map[types.NamespacedName]BasicAuthResult
+
 	// KnownSites holds the site niceIds Pangolin accepts. Pangolin rejects the
 	// whole apply for a single unknown site, so one mistyped annotation would
 	// otherwise unpublish every route. A nil map disables the check, which is how
@@ -152,7 +158,7 @@ func Render(in Inputs) (pangolin.Blueprint, map[types.NamespacedName]Verdict) {
 			ParentRefs: served,
 		}
 
-		entry, cond := translate(r, in.DefaultSite, in.KnownSites)
+		entry, cond := translate(r, in)
 		if cond != nil {
 			base.Accepted, base.ResolvedRefs = *cond, resolved()
 			if isRefReason(cond.Reason) {
@@ -241,11 +247,7 @@ func resolveCollisions(
 
 // translate validates one route and builds its blueprint entry. A non-nil
 // condition means the route is rejected and carries the reason why.
-func translate(
-	r gatewayv1.HTTPRoute,
-	defaultSite string,
-	knownSites map[string]bool,
-) (rendered, *ConditionResult) {
+func translate(r gatewayv1.HTTPRoute, in Inputs) (rendered, *ConditionResult) {
 	switch {
 	case len(r.Spec.Hostnames) == 0:
 		return fail(gatewayv1.RouteReasonUnsupportedValue,
@@ -308,11 +310,11 @@ func translate(
 		name = strings.TrimSpace(v)
 	}
 
-	site := defaultSite
+	site := in.DefaultSite
 	if v, ok := r.Annotations[AnnotationSite]; ok && v != "" {
 		site = v
 	}
-	if knownSites != nil && !knownSites[site] {
+	if in.KnownSites != nil && !in.KnownSites[site] {
 		return fail(gatewayv1.RouteConditionReason(ReasonUnknownSite),
 			"site %q does not exist in this Pangolin organisation", site)
 	}
@@ -336,7 +338,7 @@ func translate(
 		return entry, nil
 	}
 
-	resource, err := publicResource(r, name, host, site, backendHost, backendPort)
+	resource, err := publicResource(r, in, name, host, site, backendHost, backendPort)
 	if err != nil {
 		return fail(gatewayv1.RouteReasonUnsupportedValue, "%s", err)
 	}
@@ -346,6 +348,7 @@ func translate(
 
 func publicResource(
 	r gatewayv1.HTTPRoute,
+	in Inputs,
 	name, host, site, backendHost string,
 	backendPort int32,
 ) (*pangolin.PublicResource, error) {
@@ -358,6 +361,11 @@ func publicResource(
 	}
 
 	sso, err := ssoFor(r)
+	if err != nil {
+		return nil, err
+	}
+
+	basicAuth, err := basicAuthFor(r, in)
 	if err != nil {
 		return nil, err
 	}
@@ -384,7 +392,7 @@ func publicResource(
 		Name:       name,
 		Mode:       pangolin.ModeHTTP,
 		FullDomain: host,
-		Auth:       &pangolin.Auth{SSOEnabled: sso},
+		Auth:       &pangolin.Auth{SSOEnabled: sso, BasicAuth: basicAuth},
 		Targets:    []pangolin.Target{target},
 		Rules:      rules,
 	}, nil
@@ -400,7 +408,7 @@ func privateResource(
 	// route says, so each is refused rather than ignored.
 	if err := refuseAnnotations(r, "a private route",
 		"access is granted by "+AnnotationRoles+" and "+AnnotationUsers,
-		AnnotationSSO, AnnotationAccessRules); err != nil {
+		AnnotationSSO, AnnotationAccessRules, AnnotationBasicAuth); err != nil {
 		return nil, err
 	}
 	if err := refuseAnnotations(r, "a private route",
@@ -560,4 +568,21 @@ func parentKey(ref gatewayv1.ParentReference, routeNamespace string) types.Names
 		ns = string(*ref.Namespace)
 	}
 	return types.NamespacedName{Namespace: ns, Name: string(ref.Name)}
+}
+
+// ServedRoutes returns the routes whose parentRefs point at a Gateway of a
+// class this controller serves. The reconciler resolves credentials only for
+// these: a route on another controller's class is none of its business, and
+// creating a Secret for one would be a write nobody asked for.
+func ServedRoutes(in Inputs) []gatewayv1.HTTPRoute {
+	classes := servedClasses(in.GatewayClasses, in.ControllerName)
+	gateways := gatewaysByName(in.Gateways)
+
+	var served []gatewayv1.HTTPRoute
+	for _, r := range in.Routes {
+		if parents, _ := servedParents(r, gateways, classes); len(parents) > 0 {
+			served = append(served, r)
+		}
+	}
+	return served
 }

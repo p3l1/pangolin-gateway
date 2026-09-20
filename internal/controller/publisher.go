@@ -112,14 +112,25 @@ func (p *Publisher) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result,
 		}
 	}
 
-	blueprint, verdicts := gateway.Render(gateway.Inputs{
+	inputs := gateway.Inputs{
 		Routes:         routes.Items,
 		Gateways:       gateways.Items,
 		GatewayClasses: classes.Items,
 		ControllerName: p.ControllerName,
 		DefaultSite:    p.DefaultSite,
 		KnownSites:     knownSites,
-	})
+	}
+
+	// Credentials come before the render because the render is pure. A failure
+	// here aborts the pass: rendering a protected route without its credentials
+	// would drop it from the blueprint, and the prune would then unpublish it.
+	basicAuth, err := p.resolveBasicAuth(ctx, gateway.ServedRoutes(inputs))
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolving basic auth credentials: %w", err)
+	}
+	inputs.BasicAuth = basicAuth
+
+	blueprint, verdicts := gateway.Render(inputs)
 
 	resourcesDesired.WithLabelValues(visibilityPublic).
 		Set(float64(len(blueprint.PublicResources)))

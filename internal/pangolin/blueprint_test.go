@@ -183,6 +183,45 @@ func TestTargetOmitsAnAbsentHealthcheck(t *testing.T) {
 	}
 }
 
+func TestBasicAuthMarshalsToPangolinKeys(t *testing.T) {
+	raw, err := json.Marshal(Auth{SSOEnabled: false, BasicAuth: &BasicAuth{
+		User: "web", Password: "s3cret", ExtendedCompatibility: true,
+	}})
+	if err != nil {
+		t.Fatalf("marshalling auth: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshalling auth: %v", err)
+	}
+	block, ok := got["basic-auth"].(map[string]any)
+	if !ok {
+		t.Fatalf("no basic-auth object in %s", raw)
+	}
+	for key, want := range map[string]any{
+		"user":                  "web",
+		"password":              "s3cret",
+		"extendedCompatibility": true,
+	} {
+		if got := block[key]; got != want {
+			t.Errorf("basic-auth[%q] = %v, want %v", key, got, want)
+		}
+	}
+}
+
+// Pangolin clears the rows holding the protection on every apply, so an absent
+// block is what removes it from a route that stopped asking.
+func TestAuthOmitsAnAbsentBasicAuth(t *testing.T) {
+	raw, err := json.Marshal(Auth{SSOEnabled: true})
+	if err != nil {
+		t.Fatalf("marshalling auth: %v", err)
+	}
+	if strings.Contains(string(raw), "basic-auth") {
+		t.Errorf("auth carries a basic-auth key when unset: %s", raw)
+	}
+}
+
 func TestRulesMarshalToPangolinKeys(t *testing.T) {
 	bp := Blueprint{PublicResources: map[string]PublicResource{
 		"gw-demo-web": {
