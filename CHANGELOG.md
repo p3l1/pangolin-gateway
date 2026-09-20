@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.0](https://github.com/p3l1/pangolin-gateway/compare/v0.3.0...v0.4.0) (2026-09-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* pangolin_gateway_prune_total, pangolin_gateway_prune_skipped_total and pangolin_gateway_resources_desired gained a "visibility" label, so the unlabelled series they exposed before are gone. A dashboard or alert selecting them by name alone keeps working; one that matched an exact label set needs the new label summed away, for example sum without (visibility) (pangolin_gateway_resources_desired).
+
+### Features
+
+* let a route carve unauthenticated paths out of SSO ([#16](https://github.com/p3l1/pangolin-gateway/issues/16)) ([406803e](https://github.com/p3l1/pangolin-gateway/commit/406803e4af30cc195c1b814f25fbd6a3e272d7f1))
+* publish a route as a private resource ([#18](https://github.com/p3l1/pangolin-gateway/issues/18)) ([fc68885](https://github.com/p3l1/pangolin-gateway/commit/fc6888588cc3f7107fb1734b71319eab11498e4c))
+
+
+### Bug Fixes
+
+* **ci:** keep a breaking change below 1.0.0 ([#19](https://github.com/p3l1/pangolin-gateway/issues/19)) ([94f57fe](https://github.com/p3l1/pangolin-gateway/commit/94f57fe8ffe8280fc7164d1799a33bdeddff4c50))
+
 ## [0.3.0](https://github.com/p3l1/pangolin-gateway/compare/v0.2.0...v0.3.0) (2026-09-19)
 
 
