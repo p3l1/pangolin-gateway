@@ -33,7 +33,9 @@ These are hard constraints, not preferences:
   per route; `status.go` writes those verdicts into `status.parents`. All pure. The
   `pangolin.p3l1.de/` annotations are declared where they are parsed: sso, site and
   display-name at the top of `render.go`, the healthcheck in `healthcheck.go`, access rules
-  in `rules.go`, visibility and grants in `visibility.go`.
+  in `rules.go`, visibility and grants in `visibility.go`, basic auth in `basicauth.go`.
+  Credentials are resolved before the render, by `internal/controller/basicauth.go`, and
+  handed in through `Inputs.BasicAuth` so the renderer stays pure.
 - `internal/pangolin/` — the Integration API client behind a six-method interface, the
   blueprint types, and the dry-run decorator.
 - `internal/controller/publisher.go` — the single reconciler, plus its metrics.
@@ -63,7 +65,9 @@ so the schemas under test are always the ones `go.mod` pins.
 - The chart must never contain `lookup`, `randAlphaNum`, Helm hooks, or annotations specific
   to one GitOps tool.
 - The chart creates no Secret. The API key is supplied by the operator and referenced by
-  `pangolin.apiKeySecret.name`.
+  `pangolin.apiKeySecret.name`. The *controller* creates one Secret per route asking for
+  basic auth; its RBAC is `get` and `create` only, and Secrets bypass the client cache so
+  no `list` or `watch` is needed.
 
 ## How the controller works
 
@@ -114,6 +118,11 @@ Target version is v1.22.0. Verified against its source, not just the docs:
   unvalidated string and anything else falls back to HTTP, so the renderer checks it itself.
 - Pangolin skips a column whose key its document leaves out, so every healthcheck key an
   annotation can clear is sent on every pass rather than omitted.
+- `auth.basic-auth` becomes a hash of `base64(user:password)` in a separate table. Every
+  apply deletes that row before writing it again, so an omitted block removes the
+  protection — unlike the healthcheck columns, which stay. `extendedCompatibility` turns an
+  unauthenticated request into a 401 rather than the login page, but Pangolin skips that
+  challenge while `sso-enabled` is true.
 - An unknown site in a target throws inside that same transaction, failing the whole document
   as well. The controller lists sites and rejects the offending route up front; when the
   listing is unavailable the check degrades to a warning rather than rejecting everything.

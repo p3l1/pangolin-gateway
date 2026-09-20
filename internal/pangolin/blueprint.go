@@ -99,6 +99,22 @@ func (r Rules) MarshalJSON() ([]byte, error) {
 
 type Auth struct {
 	SSOEnabled bool `json:"sso-enabled"`
+
+	// Omitting the block removes the protection: Pangolin clears the rows that
+	// hold it on every apply before reading this one back.
+	BasicAuth *BasicAuth `json:"basic-auth,omitempty"`
+}
+
+// BasicAuth lets a client past with an Authorization header instead of a login.
+// Pangolin stores a hash of "user:password" and compares what the client sent.
+type BasicAuth struct {
+	User     string `json:"user"`
+	Password string `json:"password"`
+
+	// Always true. Without it Pangolin answers an unauthenticated request with
+	// its login page rather than a challenge, which no non-browser client can
+	// act on. Pangolin skips the challenge anyway while SSO is on.
+	ExtendedCompatibility bool `json:"extendedCompatibility"`
 }
 
 type Target struct {

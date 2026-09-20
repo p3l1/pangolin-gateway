@@ -20,6 +20,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"github.com/p3l1/pangolin-gateway/internal/gateway"
 )
 
 const (
@@ -419,6 +421,92 @@ func TestPrivateRouteIsPublishedAndPruned(t *testing.T) {
 		// number their resources independently.
 		if len(state.PrivateDeleted) <= before {
 			return fmt.Errorf("no DELETE reached the private endpoint")
+		}
+		return nil
+	})
+}
+
+// The credential is written by the controller's own ServiceAccount, so this is
+// the only tier that proves the chart's `get` and `create` on Secrets suffice.
+func TestBasicAuthCredentialIsGeneratedInTheCluster(t *testing.T) {
+	c := newClient(t)
+	ctx := context.Background()
+
+	waitForDeployment(t, c, deploymentName)
+	waitForDeployment(t, c, fakeDeployment)
+
+	gw := &gatewayv1.Gateway{}
+	gw.Namespace = namespace
+	gw.Name = "e2e-auth-gw"
+	gw.Spec.GatewayClassName = "pangolin"
+	gw.Spec.Listeners = []gatewayv1.Listener{{
+		Name: "http", Port: 80, Protocol: gatewayv1.HTTPProtocolType,
+	}}
+	if err := c.Create(ctx, gw); err != nil {
+		t.Fatalf("creating Gateway: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Delete(context.Background(), gw) })
+
+	port := gatewayv1.PortNumber(8080)
+	route := &gatewayv1.HTTPRoute{}
+	route.Namespace = namespace
+	route.Name = "e2e-auth"
+	route.Annotations = map[string]string{
+		gateway.AnnotationBasicAuth: "true",
+		gateway.AnnotationSSO:       "false",
+	}
+	route.Spec.ParentRefs = []gatewayv1.ParentReference{{Name: "e2e-auth-gw"}}
+	route.Spec.Hostnames = []gatewayv1.Hostname{"e2e-auth.example.com"}
+	route.Spec.Rules = []gatewayv1.HTTPRouteRule{{
+		BackendRefs: []gatewayv1.HTTPBackendRef{{
+			BackendRef: gatewayv1.BackendRef{
+				BackendObjectReference: gatewayv1.BackendObjectReference{
+					Name: "e2e-auth", Port: &port,
+				},
+			},
+		}},
+	}}
+	if err := c.Create(ctx, route); err != nil {
+		t.Fatalf("creating HTTPRoute: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Delete(context.Background(), route) })
+
+	var password string
+	eachPoll(t, readyTimeout, func() error {
+		var secret corev1.Secret
+		key := types.NamespacedName{
+			Namespace: namespace,
+			Name:      gateway.BasicAuthSecretName("e2e-auth"),
+		}
+		if err := c.Get(ctx, key, &secret); err != nil {
+			return err
+		}
+		password = string(secret.Data["password"])
+		if password == "" {
+			return fmt.Errorf("secret %s carries no password", key)
+		}
+		return nil
+	})
+
+	eachPoll(t, readyTimeout, func() error {
+		state := readFakeState(t)
+		entry, ok := state.Resources["gw-"+namespace+"-e2e-auth"]
+		if !ok {
+			return fmt.Errorf("route not published yet; fake holds %v", keysOf(state.Resources))
+		}
+		auth, ok := entry["auth"].(map[string]any)
+		if !ok {
+			return fmt.Errorf("no auth block in %v", entry)
+		}
+		basic, ok := auth["basic-auth"].(map[string]any)
+		if !ok {
+			return fmt.Errorf("no basic-auth block in %v", auth)
+		}
+		if got := basic["password"]; got != password {
+			return fmt.Errorf("published password = %v, want the Secret's", got)
+		}
+		if got := basic["extendedCompatibility"]; got != true {
+			return fmt.Errorf("extendedCompatibility = %v, want true", got)
 		}
 		return nil
 	})

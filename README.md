@@ -251,6 +251,74 @@ the rule is corrected.
 
 Details of the matching and the evidence behind it: [docs/access-rules.md](docs/access-rules.md).
 
+## Basic auth
+
+A public resource can require an `Authorization: Basic` header before anything
+reaches the backend:
+
+```yaml
+metadata:
+  annotations:
+    pangolin.p3l1.de/basic-auth: "true"
+    pangolin.p3l1.de/sso: "false"    # see below; a browser is sent to SSO otherwise
+```
+
+**The annotation carries no credentials.** The repositories holding these routes are
+public, and a password written into an annotation is a published password. The
+controller generates one instead and writes it to a Secret named after the route:
+
+```sh
+kubectl -n argocd get secret gw-argocd-appset-webhook-basic-auth \
+    -o jsonpath='{.data.password}' | base64 -d
+```
+
+The Secret is of type `kubernetes.io/basic-auth` with the keys `username` and
+`password`; the username is the route's name. It is written once and never
+rewritten, so a URL already pasted into a webhook keeps working. **Rotating means
+deleting it** — the next pass generates a new one. It carries an `ownerReference` to
+its route, so Kubernetes removes it when the route goes.
+
+### What this costs in permissions
+
+The ClusterRole gains `get` and `create` on Secrets. That is a deliberate widening,
+and the shape of it matters:
+
+- No `list` and no `watch`, so the controller cannot enumerate Secrets. Reads go
+  straight to the API server rather than through an informer cache, which is what
+  keeps those two verbs off the role.
+- No `update` and no `delete`, so it can neither overwrite an existing Secret nor
+  remove one. Deletion is left to Kubernetes through the `ownerReference`.
+- The name is derived from the route — `gw-<route>-basic-auth`, in the route's own
+  namespace — and no annotation can point it elsewhere.
+- A Secret of that name the controller does not own is **refused, not adopted**, and
+  the route is rejected with `Accepted: False`. Otherwise whatever that Secret held
+  would quietly become the password of a resource on the internet.
+
+Under `--dry-run` no Secret is written. A route asking for one it does not have yet
+is reported as rejected, naming the Secret that a real pass would create.
+
+### Why it exists
+
+ArgoCD's ApplicationSet controller does not verify the signature GitHub computes
+from a webhook secret ([argo-cd#21444](https://github.com/argoproj/argo-cd/issues/21444)),
+so configuring one there protects nothing. Basic auth in front of the resource does,
+because GitHub's sender accepts credentials in the payload URL and turns them into an
+`Authorization: Basic` header.
+
+That last part is measured, not documented: GitHub's documentation only warns against
+putting credentials in the payload URL, and its own delivery log omits the
+`Authorization` header even though it lists `X-Hub-Signature-256`. Only the receiving
+end shows it.
+
+`extendedCompatibility` is always sent as true. Without it Pangolin answers an
+unauthenticated request with its login page instead of a challenge, which no webhook
+sender can act on. Pangolin skips the challenge while `sso` is on, so a route meant
+for a machine should also set `pangolin.p3l1.de/sso: "false"` — a client that sends
+the header unprompted is let through either way.
+
+A private route carrying the annotation is rejected: a private resource has no auth
+block to put the credentials in.
+
 ## Private resources
 
 Pangolin separates resources reachable from the internet from those reachable only through a
@@ -313,6 +381,7 @@ and listener/`allowedRoutes` semantics.
 | Malformed healthcheck annotation | `Accepted: False`, `UnsupportedValue` |
 | Malformed access rule | `Accepted: False`, `UnsupportedValue` |
 | Annotation the chosen visibility cannot honour | `Accepted: False`, `UnsupportedValue` |
+| Basic auth asked for, credentials unavailable | `Accepted: False`, `UnsupportedValue` |
 | parentRef names no existing Gateway | `Accepted: False`, `NoMatchingParent` |
 
 Conditions are written per parentRef into `status.parents[]`, only on entries belonging to

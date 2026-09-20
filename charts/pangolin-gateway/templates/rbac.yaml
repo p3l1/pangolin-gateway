@@ -18,6 +18,13 @@ rules:
     - create
     - patch
   - apiGroups:
+    - ""
+    resources:
+    - secrets
+    verbs:
+    - create
+    - get
+  - apiGroups:
     - gateway.networking.k8s.io
     resources:
     - gatewayclasses
