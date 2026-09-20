@@ -113,11 +113,14 @@ func TestHealthcheckMarshalsToPangolinKeys(t *testing.T) {
 				Hostname: "web.demo.svc.cluster.local",
 				Port:     8080,
 				Healthcheck: &Healthcheck{
-					Hostname: "web.demo.svc.cluster.local",
-					Port:     8080,
-					Path:     "/healthz",
-					Interval: 30,
-					Timeout:  5,
+					Hostname:        "web.demo.svc.cluster.local",
+					Port:            8080,
+					Path:            "/healthz",
+					Interval:        30,
+					Timeout:         5,
+					Method:          "GET",
+					Status:          400,
+					FollowRedirects: true,
 				},
 			}},
 		},
@@ -139,14 +142,31 @@ func TestHealthcheckMarshalsToPangolinKeys(t *testing.T) {
 	}
 
 	for key, want := range map[string]any{
-		"hostname": "web.demo.svc.cluster.local",
-		"port":     float64(8080),
-		"path":     "/healthz",
-		"interval": float64(30),
-		"timeout":  float64(5),
+		"hostname":         "web.demo.svc.cluster.local",
+		"port":             float64(8080),
+		"path":             "/healthz",
+		"interval":         float64(30),
+		"timeout":          float64(5),
+		"method":           "GET",
+		"status":           float64(400),
+		"follow-redirects": true,
 	} {
 		if got := hc[key]; got != want {
 			t.Errorf("healthcheck[%q] = %v, want %v", key, got, want)
+		}
+	}
+}
+
+// Pangolin skips a column its document leaves out, so a key that vanishes with
+// its annotation would keep the value the route no longer asks for.
+func TestHealthcheckKeepsEveryKeyItCanClear(t *testing.T) {
+	raw, err := json.Marshal(Healthcheck{Hostname: "web", Port: 80, Path: "/healthz"})
+	if err != nil {
+		t.Fatalf("marshalling healthcheck: %v", err)
+	}
+	for _, key := range []string{"method", "status", "follow-redirects"} {
+		if !strings.Contains(string(raw), `"`+key+`"`) {
+			t.Errorf("healthcheck omits %q when unset: %s", key, raw)
 		}
 	}
 }

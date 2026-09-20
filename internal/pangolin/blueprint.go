@@ -109,6 +109,19 @@ type Healthcheck struct {
 	Path     string `json:"path"`
 	Interval int    `json:"interval"`
 	Timeout  int    `json:"timeout"`
+
+	// Never omitted. Pangolin discards a check whose method is empty before it
+	// reaches the agent, so the check would sit in its database and never run.
+	Method string `json:"method"`
+
+	// Zero means any 2xx. Never omitted: Pangolin skips a column its document
+	// leaves out, so an absent key would keep the status of a route whose
+	// annotation was just removed.
+	Status int `json:"status"`
+
+	// Never omitted, for the same reason as Status. Pangolin follows redirects
+	// unless told otherwise, which compares Status against wherever it lands.
+	FollowRedirects bool `json:"follow-redirects"`
 }
 
 // PrivateResource is one entry under private-resources, keyed by its niceId.
