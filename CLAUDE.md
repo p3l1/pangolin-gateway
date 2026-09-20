@@ -110,7 +110,10 @@ Target version is v1.22.0. Verified against its source, not just the docs:
 - A healthcheck whose `method` is empty is dropped before it reaches the agent, so the check
   sits in Pangolin's database and never runs; `method` is therefore always sent. Without
   `status` the agent accepts any 2xx, and it follows redirects unless `follow-redirects` says
-  otherwise.
+  otherwise. A `mode` of `tcp` skips all of that and only dials the port; the key is an
+  unvalidated string and anything else falls back to HTTP, so the renderer checks it itself.
+- Pangolin skips a column whose key its document leaves out, so every healthcheck key an
+  annotation can clear is sent on every pass rather than omitted.
 - An unknown site in a target throws inside that same transaction, failing the whole document
   as well. The controller lists sites and rejects the offending route up front; when the
   listing is unavailable the check degrades to a warning rather than rejecting everything.

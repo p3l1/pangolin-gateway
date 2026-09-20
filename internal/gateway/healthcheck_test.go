@@ -3,10 +3,13 @@
 package gateway
 
 import (
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"github.com/p3l1/pangolin-gateway/internal/pangolin"
 )
 
 func TestRenderAddsAHealthcheckWhenAPathIsGiven(t *testing.T) {
@@ -311,5 +314,145 @@ func TestRenderRejectsTheNewHealthcheckSettingsWithoutAPath(t *testing.T) {
 				t.Errorf("reason = %q, want UnsupportedValue", v.Accepted.Reason)
 			}
 		})
+	}
+}
+
+// A target with no 2xx path at all is better described by a check that only
+// opens a connection than by one that insists on a status it cannot give.
+func TestRenderPublishesATCPHealthcheck(t *testing.T) {
+	r := route("demo", "web", withAnnotations(map[string]string{
+		AnnotationHealthcheckMode: pangolin.HealthcheckModeTCP,
+	}))
+
+	bp, _ := Render(defaultInputs(r))
+
+	target := bp.PublicResources["gw-demo-web"].Targets[0]
+	hc := target.Healthcheck
+	if hc == nil {
+		t.Fatal("no healthcheck on the target")
+	}
+	if got, want := hc.Mode, pangolin.HealthcheckModeTCP; got != want {
+		t.Errorf("mode = %q, want %q", got, want)
+	}
+	if hc.Hostname != target.Hostname || hc.Port != target.Port {
+		t.Errorf("healthcheck addresses %s:%d, want the target's %s:%d",
+			hc.Hostname, hc.Port, target.Hostname, target.Port)
+	}
+	if hc.Path != "" || hc.Method != "" || hc.Status != 0 {
+		t.Errorf("TCP check carries HTTP settings: path=%q method=%q status=%d",
+			hc.Path, hc.Method, hc.Status)
+	}
+	if got, want := hc.Interval, DefaultHealthcheckInterval; got != want {
+		t.Errorf("interval = %d, want the default %d", got, want)
+	}
+}
+
+func TestRenderTunesATCPHealthcheck(t *testing.T) {
+	r := route("demo", "web", withAnnotations(map[string]string{
+		AnnotationHealthcheckMode:     pangolin.HealthcheckModeTCP,
+		AnnotationHealthcheckInterval: "10",
+		AnnotationHealthcheckTimeout:  "2",
+	}))
+
+	bp, _ := Render(defaultInputs(r))
+
+	hc := bp.PublicResources["gw-demo-web"].Targets[0].Healthcheck
+	if hc == nil {
+		t.Fatal("no healthcheck on the target")
+	}
+	if hc.Interval != 10 || hc.Timeout != 2 {
+		t.Errorf("interval/timeout = %d/%d, want 10/2", hc.Interval, hc.Timeout)
+	}
+}
+
+// A TCP check never reads a response, so anything describing one is a
+// misunderstanding worth reporting rather than ignoring.
+func TestRenderRejectsHTTPSettingsOnATCPHealthcheck(t *testing.T) {
+	for name, tc := range map[string]struct {
+		annotation, value string
+	}{
+		"path":             {AnnotationHealthcheckPath, "/healthz"},
+		"status":           {AnnotationHealthcheckStatus, "400"},
+		"method":           {AnnotationHealthcheckMethod, "HEAD"},
+		"follow-redirects": {AnnotationHealthcheckFollowRedirects, "false"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := route("demo", "web", withAnnotations(map[string]string{
+				AnnotationHealthcheckMode: pangolin.HealthcheckModeTCP,
+				tc.annotation:             tc.value,
+			}))
+
+			bp, verdicts := Render(defaultInputs(r))
+
+			if _, published := bp.PublicResources["gw-demo-web"]; published {
+				t.Error("route with an HTTP setting on a TCP check was published")
+			}
+			v := verdictFor(t, verdicts, "demo", "web")
+			if !strings.Contains(v.Accepted.Message, tc.annotation) {
+				t.Errorf("message %q does not name %q", v.Accepted.Message, tc.annotation)
+			}
+		})
+	}
+}
+
+// Pangolin takes any string as the mode and falls back to HTTP for one it does
+// not know, so a typo would quietly check something else entirely.
+func TestRenderRejectsAnUnknownHealthcheckMode(t *testing.T) {
+	for name, value := range map[string]string{
+		"typo":       "tpc",
+		"wrong case": "TCP",
+		"empty":      "",
+		"snmp":       "snmp",
+		"icmp":       "icmp",
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := route("demo", "web", withAnnotations(map[string]string{
+				AnnotationHealthcheckMode: value,
+			}))
+
+			bp, verdicts := Render(defaultInputs(r))
+
+			if _, published := bp.PublicResources["gw-demo-web"]; published {
+				t.Error("route with an unknown healthcheck mode was published")
+			}
+			if v := verdictFor(t, verdicts, "demo", "web"); v.Accepted.Status != metav1.ConditionFalse {
+				t.Errorf("Accepted = %+v, want False", v.Accepted)
+			}
+		})
+	}
+}
+
+// The mode names the strategy; it does not say what to request. An HTTP check
+// still needs its path, and saying so beats publishing a route without a check.
+func TestRenderRejectsHTTPModeWithoutAPath(t *testing.T) {
+	r := route("demo", "web", withAnnotations(map[string]string{
+		AnnotationHealthcheckMode: pangolin.HealthcheckModeHTTP,
+	}))
+
+	bp, verdicts := Render(defaultInputs(r))
+
+	if _, published := bp.PublicResources["gw-demo-web"]; published {
+		t.Error("route asking for an HTTP check without a path was published")
+	}
+	v := verdictFor(t, verdicts, "demo", "web")
+	if !strings.Contains(v.Accepted.Message, AnnotationHealthcheckPath) {
+		t.Errorf("message %q does not name %q", v.Accepted.Message, AnnotationHealthcheckPath)
+	}
+}
+
+// An annotated path with no mode is the original spelling and still means HTTP.
+func TestRenderDefaultsAPathOnlyHealthcheckToHTTPMode(t *testing.T) {
+	r := route("demo", "web", withAnnotations(map[string]string{
+		AnnotationHealthcheckPath: "/healthz",
+	}))
+
+	bp, _ := Render(defaultInputs(r))
+
+	hc := bp.PublicResources["gw-demo-web"].Targets[0].Healthcheck
+	if hc == nil {
+		t.Fatal("no healthcheck on the target")
+	}
+	if got, want := hc.Mode, pangolin.HealthcheckModeHTTP; got != want {
+		t.Errorf("mode = %q, want %q", got, want)
 	}
 }

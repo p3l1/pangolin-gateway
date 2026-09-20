@@ -115,6 +115,7 @@ func TestHealthcheckMarshalsToPangolinKeys(t *testing.T) {
 				Healthcheck: &Healthcheck{
 					Hostname:        "web.demo.svc.cluster.local",
 					Port:            8080,
+					Mode:            HealthcheckModeHTTP,
 					Path:            "/healthz",
 					Interval:        30,
 					Timeout:         5,
@@ -144,6 +145,7 @@ func TestHealthcheckMarshalsToPangolinKeys(t *testing.T) {
 	for key, want := range map[string]any{
 		"hostname":         "web.demo.svc.cluster.local",
 		"port":             float64(8080),
+		"mode":             HealthcheckModeHTTP,
 		"path":             "/healthz",
 		"interval":         float64(30),
 		"timeout":          float64(5),
@@ -164,7 +166,7 @@ func TestHealthcheckKeepsEveryKeyItCanClear(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshalling healthcheck: %v", err)
 	}
-	for _, key := range []string{"method", "status", "follow-redirects"} {
+	for _, key := range []string{"mode", "path", "method", "status", "follow-redirects"} {
 		if !strings.Contains(string(raw), `"`+key+`"`) {
 			t.Errorf("healthcheck omits %q when unset: %s", key, raw)
 		}

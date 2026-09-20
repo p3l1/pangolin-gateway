@@ -405,7 +405,7 @@ func privateResource(
 	}
 	if err := refuseAnnotations(r, "a private route",
 		"a private resource has no targets to check",
-		append([]string{AnnotationHealthcheckPath}, healthcheckTuning...)...); err != nil {
+		healthcheckAnnotations...); err != nil {
 		return nil, err
 	}
 
