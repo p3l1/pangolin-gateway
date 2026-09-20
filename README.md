@@ -126,6 +126,51 @@ resource can keep the name people already recognise.
 publish a service unprotected. A value that is neither `"true"` nor `"false"` is rejected
 rather than guessed.
 
+## Healthchecks
+
+Pangolin stops routing to a target that has stopped answering. The check is off until
+`pangolin.p3l1.de/healthcheck-path` is set:
+
+```yaml
+metadata:
+  annotations:
+    pangolin.p3l1.de/healthcheck-path: /api/webhook          # switches the check on
+    pangolin.p3l1.de/healthcheck-status: "400"               # expected code; default is any 2xx
+    pangolin.p3l1.de/healthcheck-method: HEAD                # default GET
+    pangolin.p3l1.de/healthcheck-follow-redirects: "false"   # default true
+    pangolin.p3l1.de/healthcheck-interval: "30"              # seconds, default 30
+    pangolin.p3l1.de/healthcheck-timeout: "5"                # seconds, default 5
+```
+
+Hostname and port are not annotations: a check against an address other than the
+target's would not describe that target.
+
+**`healthcheck-status` exists because "healthy" and "answers 2xx" are not the same
+claim.** ArgoCD's ApplicationSet webhook answers 400 on its only route and 404
+everywhere else, so a check insisting on 2xx would be permanently red — worse than no
+check at all, because Pangolin stops routing to a target it believes is down.
+
+**`healthcheck-follow-redirects` earns its place only next to `healthcheck-status`.**
+Pangolin follows redirects by default, so an expected 301 or 302 would be compared
+against whatever the redirect lands on and could never match.
+
+**`healthcheck-method` is checked against a fixed list of verbs rather than passed
+through.** Pangolin takes any string here but discards a check whose method is empty
+*before it ever runs*, which leaves a check in its database that never fires. The
+controller always sends a method for the same reason.
+
+Pangolin's schema carries more fields that this controller does not map: `enabled`
+(a check is switched off by removing its annotations, the same way a rule that should
+not apply is deleted rather than disabled), `scheme` (the target's own method fixes
+it), `headers`, `unhealthy-interval` and the two thresholds.
+
+A malformed value is reported on the route as `Accepted: False` rather than dropped —
+a check that silently does not run is the failure these annotations were added to fix.
+
+Removing an annotation restores its default on the next pass. Pangolin skips a column
+its document leaves out, so the controller always sends these keys rather than omitting
+them: an omitted one would keep the value a route has just stopped asking for.
+
 ## Access rules
 
 A service can be behind SSO and still serve a few paths unauthenticated — a counting script
@@ -218,10 +263,8 @@ one `backendRef` to a Service in its own namespace, and no filters. Anything els
 on the route with `Accepted: False` and a reason, rather than published as something it is
 not — silently dropping a redirect filter would proxy the whole domain to one backend.
 
-A healthcheck is optional and off unless `pangolin.p3l1.de/healthcheck-path` is set.
-Its hostname and port always mirror the target's — a check against a different address
-would not describe that target — so only the path and, optionally, the interval and
-timeout are annotated.
+A healthcheck is optional and off unless `pangolin.p3l1.de/healthcheck-path` is set;
+see [Healthchecks](#healthchecks).
 
 Not covered yet: TCPRoute, TLSRoute, the `host`, `cidr`, `ssh` and `inference` private
 modes, policies, multiple hostnames per route, cross-namespace backends via ReferenceGrant,

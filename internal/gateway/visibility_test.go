@@ -229,6 +229,18 @@ func TestRenderRejectsAnnotationsAPrivateResourceCannotHonour(t *testing.T) {
 			map[string]string{AnnotationHealthcheckPath: "/healthz"},
 			AnnotationHealthcheckPath,
 		},
+		"healthcheck status": {
+			map[string]string{AnnotationHealthcheckStatus: "400"},
+			AnnotationHealthcheckStatus,
+		},
+		"healthcheck method": {
+			map[string]string{AnnotationHealthcheckMethod: "HEAD"},
+			AnnotationHealthcheckMethod,
+		},
+		"healthcheck follow-redirects": {
+			map[string]string{AnnotationHealthcheckFollowRedirects: "false"},
+			AnnotationHealthcheckFollowRedirects,
+		},
 		"access rules": {
 			map[string]string{
 				AnnotationAccessRules: "- action: allow\n  match: path\n  value: /x\n",

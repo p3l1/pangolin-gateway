@@ -31,9 +31,9 @@ These are hard constraints, not preferences:
   client, then starts the controller-runtime manager.
 - `internal/gateway/` — `render.go` turns Gateway API objects into a blueprint and a verdict
   per route; `status.go` writes those verdicts into `status.parents`. All pure. The
-  `pangolin.p3l1.de/` annotations are declared where they are parsed: the original five at
-  the top of `render.go`, access rules in `rules.go`, visibility and grants in
-  `visibility.go`.
+  `pangolin.p3l1.de/` annotations are declared where they are parsed: sso, site and
+  display-name at the top of `render.go`, the healthcheck in `healthcheck.go`, access rules
+  in `rules.go`, visibility and grants in `visibility.go`.
 - `internal/pangolin/` — the Integration API client behind a six-method interface, the
   blueprint types, and the dry-run decorator.
 - `internal/controller/publisher.go` — the single reconciler, plus its metrics.
@@ -107,6 +107,10 @@ Target version is v1.22.0. Verified against its source, not just the docs:
   different resource in each section. Rationale: `docs/private-resources.md`.
 - Access rules run **before** authentication: `allow` skips it entirely, `pass` only falls
   through to it. Rationale: `docs/access-rules.md`.
+- A healthcheck whose `method` is empty is dropped before it reaches the agent, so the check
+  sits in Pangolin's database and never runs; `method` is therefore always sent. Without
+  `status` the agent accepts any 2xx, and it follows redirects unless `follow-redirects` says
+  otherwise.
 - An unknown site in a target throws inside that same transaction, failing the whole document
   as well. The controller lists sites and rejects the offending route up front; when the
   listing is unavailable the check degrades to a warning rather than rejecting everything.

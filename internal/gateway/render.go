@@ -6,7 +6,6 @@ package gateway
 import (
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,19 +24,6 @@ const (
 	// which is unambiguous but not what people call the service; a migrated
 	// resource can keep the name they already recognise.
 	AnnotationName = "pangolin.p3l1.de/display-name"
-
-	// A healthcheck path switches the check on; the other two only tune it.
-	// Hostname and port are not annotations: a check against an address other
-	// than the target's would not describe that target.
-	AnnotationHealthcheckPath     = "pangolin.p3l1.de/healthcheck-path"
-	AnnotationHealthcheckInterval = "pangolin.p3l1.de/healthcheck-interval"
-	AnnotationHealthcheckTimeout  = "pangolin.p3l1.de/healthcheck-timeout"
-)
-
-// Pangolin's own defaults, restated so the blueprint says what it means.
-const (
-	DefaultHealthcheckInterval = 30
-	DefaultHealthcheckTimeout  = 5
 )
 
 // KeyPrefix scopes everything this controller owns. The prune touches nothing
@@ -419,8 +405,7 @@ func privateResource(
 	}
 	if err := refuseAnnotations(r, "a private route",
 		"a private resource has no targets to check",
-		AnnotationHealthcheckPath, AnnotationHealthcheckInterval,
-		AnnotationHealthcheckTimeout); err != nil {
+		append([]string{AnnotationHealthcheckPath}, healthcheckTuning...)...); err != nil {
 		return nil, err
 	}
 
@@ -465,9 +450,15 @@ func Key(namespace, name string) string {
 // ssoFor fails closed: an unreadable value must neither publish a service
 // unprotected nor silently protect one the author meant to open.
 func ssoFor(r gatewayv1.HTTPRoute) (bool, error) {
-	v, ok := r.Annotations[AnnotationSSO]
+	return boolAnnotation(r, AnnotationSSO, true)
+}
+
+// boolAnnotation rejects anything but the two words rather than guessing, since
+// a guess would publish something other than what the route says.
+func boolAnnotation(r gatewayv1.HTTPRoute, annotation string, fallback bool) (bool, error) {
+	v, ok := r.Annotations[annotation]
 	if !ok || v == "" {
-		return true, nil
+		return fallback, nil
 	}
 	switch strings.ToLower(v) {
 	case "true":
@@ -476,63 +467,8 @@ func ssoFor(r gatewayv1.HTTPRoute) (bool, error) {
 		return false, nil
 	default:
 		return false, fmt.Errorf("annotation %s must be \"true\" or \"false\", got %q",
-			AnnotationSSO, v)
+			annotation, v)
 	}
-}
-
-// healthcheckFor builds the target's check from its annotations. Returning nil
-// without an error means no check was asked for.
-func healthcheckFor(r gatewayv1.HTTPRoute, target pangolin.Target) (*pangolin.Healthcheck, error) {
-	path := r.Annotations[AnnotationHealthcheckPath]
-
-	if path == "" {
-		// Tuning without a path yields no check at all, which is not what the
-		// author expected; say so rather than publishing a route that lacks one.
-		for _, a := range []string{AnnotationHealthcheckInterval, AnnotationHealthcheckTimeout} {
-			if _, set := r.Annotations[a]; set {
-				return nil, fmt.Errorf("%s is set without %s, so no healthcheck would be created",
-					a, AnnotationHealthcheckPath)
-			}
-		}
-		return nil, nil
-	}
-	if !strings.HasPrefix(path, "/") {
-		return nil, fmt.Errorf("annotation %s must start with \"/\", got %q",
-			AnnotationHealthcheckPath, path)
-	}
-
-	interval, err := positiveSeconds(r, AnnotationHealthcheckInterval, DefaultHealthcheckInterval)
-	if err != nil {
-		return nil, err
-	}
-	timeout, err := positiveSeconds(r, AnnotationHealthcheckTimeout, DefaultHealthcheckTimeout)
-	if err != nil {
-		return nil, err
-	}
-
-	return &pangolin.Healthcheck{
-		Hostname: target.Hostname,
-		Port:     target.Port,
-		Path:     path,
-		Interval: interval,
-		Timeout:  timeout,
-	}, nil
-}
-
-func positiveSeconds(r gatewayv1.HTTPRoute, annotation string, fallback int) (int, error) {
-	raw, ok := r.Annotations[annotation]
-	if !ok || raw == "" {
-		return fallback, nil
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0, fmt.Errorf("annotation %s must be a whole number of seconds, got %q",
-			annotation, raw)
-	}
-	if n <= 0 {
-		return 0, fmt.Errorf("annotation %s must be greater than zero, got %d", annotation, n)
-	}
-	return n, nil
 }
 
 func isRefReason(reason string) bool {
