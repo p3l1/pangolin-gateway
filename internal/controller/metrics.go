@@ -7,6 +7,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
+// Label values for the blueprint section a metric is about. Public and private
+// resources are separate listings with separate deletions, so a total that
+// merged them would hide one section failing while the other worked.
+const (
+	visibilityPublic  = "public"
+	visibilityPrivate = "private"
+)
+
 var (
 	publishTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pangolin_gateway_publish_total",
@@ -16,17 +24,17 @@ var (
 	pruneTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pangolin_gateway_prune_total",
 		Help: "Individual resource deletions attempted by the prune, by result.",
-	}, []string{"result"})
+	}, []string{"result", "visibility"})
 
 	pruneSkippedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pangolin_gateway_prune_skipped_total",
 		Help: "Passes in which the prune did not run, by reason.",
-	}, []string{"reason"})
+	}, []string{"reason", "visibility"})
 
-	resourcesDesired = prometheus.NewGauge(prometheus.GaugeOpts{
+	resourcesDesired = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "pangolin_gateway_resources_desired",
 		Help: "Resources in the most recently rendered blueprint.",
-	})
+	}, []string{"visibility"})
 
 	routesRejected = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "pangolin_gateway_routes_rejected",

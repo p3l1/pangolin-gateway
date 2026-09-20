@@ -30,9 +30,11 @@ These are hard constraints, not preferences:
 - `cmd/main.go` — process entry point; wires flags into `manager.Config` and the Pangolin
   client, then starts the controller-runtime manager.
 - `internal/gateway/` — `render.go` turns Gateway API objects into a blueprint and a verdict
-  per route; `status.go` writes those verdicts into `status.parents`. Both are pure. The
-  five `pangolin.p3l1.de/` annotations it reads are declared at the top of `render.go`.
-- `internal/pangolin/` — the Integration API client behind a four-method interface, the
+  per route; `status.go` writes those verdicts into `status.parents`. All pure. The
+  `pangolin.p3l1.de/` annotations are declared where they are parsed: the original five at
+  the top of `render.go`, access rules in `rules.go`, visibility and grants in
+  `visibility.go`.
+- `internal/pangolin/` — the Integration API client behind a six-method interface, the
   blueprint types, and the dry-run decorator.
 - `internal/controller/publisher.go` — the single reconciler, plus its metrics.
 - `internal/manager/` — manager assembly (`Config`, `ControllerOptions`), the leader-election
@@ -72,7 +74,8 @@ predicate: a status write is itself a watch event, and status writes do not bump
 so without this the controller loops against itself.
 
 **A pass is:** read all three kinds (any read error aborts before anything is written) →
-render → apply → prune → write status. The prune runs only after a successful apply and a
+render → apply → prune → write status. The prune runs once per blueprint section, each
+against its own listing. The prune runs only after a successful apply and a
 complete listing, and deletes only resources whose niceId starts with `gw-`.
 
 **No finalizer.** A deleted route is simply absent from the next render and the prune removes
@@ -89,19 +92,28 @@ Target version is v1.22.0. Verified against its source, not just the docs:
 
 - The blueprint key for a resource type is `mode`; `protocol` is deprecated.
 - `public-resources` is correct and is merged into the internal `proxy-resources` map.
-- `full-domain` must be unique across the blueprint, so a duplicate fails the entire apply.
-  The renderer resolves collisions itself — oldest route wins — to keep one typo from
-  unpublishing the cluster.
+- `full-domain` is unique **per section**: Pangolin checks `proxy-resources` and
+  `client-resources` against themselves, so a duplicate within one fails the entire apply.
+  The renderer resolves collisions itself — oldest route wins, across both sections — to keep
+  one typo from unpublishing the cluster.
 - The apply is transactional: failures come back as 400, success as 201. There is no
   200-with-partial-failures case.
 - `DELETE /public-resource/{resourceId}` takes a **numeric** id, so the prune must list first
   to map niceId to resourceId.
+- `private-resources` is a separate table behind separate routes: it is absent from
+  `listResources`, its listing rows name the id `siteResourceId`, and it is deleted through
+  `DELETE /private-resource/{siteResourceId}`. The client normalises that spelling so the
+  prune sees one row type. The two id sequences are independent — the same number is a
+  different resource in each section. Rationale: `docs/private-resources.md`.
+- Access rules run **before** authentication: `allow` skips it entirely, `pass` only falls
+  through to it. Rationale: `docs/access-rules.md`.
 - An unknown site in a target throws inside that same transaction, failing the whole document
   as well. The controller lists sites and rejects the offending route up front; when the
   listing is unavailable the check degrades to a warning rather than rejecting everything.
 
 **API key actions.** Three are required — `applyBlueprint`, `listResources`, `deleteResource`
-— and `listSites` is needed for the site check above. Every route is guarded by
+— plus `listSiteResources` and `deleteSiteResource` to prune private resources, and
+`listSites` for the site check above. Every route is guarded by
 `verifyApiKeyHasAction`, so a key missing one returns 401/403 for that route alone. Together
 with pointing `--pangolin-endpoint` at the internal API rather than the Integration API, that
 is the most likely cause of an unexplained 401 — which is why `pangolin.AuthError` names both

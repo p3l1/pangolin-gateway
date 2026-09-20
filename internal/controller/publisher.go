@@ -121,17 +121,24 @@ func (p *Publisher) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result,
 		KnownSites:     knownSites,
 	})
 
-	resourcesDesired.Set(float64(len(blueprint.PublicResources)))
+	resourcesDesired.WithLabelValues(visibilityPublic).
+		Set(float64(len(blueprint.PublicResources)))
+	resourcesDesired.WithLabelValues(visibilityPrivate).
+		Set(float64(len(blueprint.PrivateResources)))
 	routesRejected.Set(float64(countRejected(verdicts)))
 
 	publishErr := p.Pangolin.ApplyBlueprint(ctx, blueprint)
 	if publishErr != nil {
 		publishTotal.WithLabelValues("error").Inc()
-		log.Error(publishErr, "applying blueprint", "resources", len(blueprint.PublicResources))
+		log.Error(publishErr, "applying blueprint",
+			"publicResources", len(blueprint.PublicResources),
+			"privateResources", len(blueprint.PrivateResources))
 		markPublishFailed(verdicts, publishErr)
 	} else {
 		publishTotal.WithLabelValues("success").Inc()
-		log.V(1).Info("blueprint applied", "resources", len(blueprint.PublicResources))
+		log.V(1).Info("blueprint applied",
+			"publicResources", len(blueprint.PublicResources),
+			"privateResources", len(blueprint.PrivateResources))
 		if p.DryRun {
 			markDryRun(verdicts)
 		}
@@ -144,7 +151,8 @@ func (p *Publisher) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result,
 	if publishErr == nil {
 		pruneErr = p.prune(ctx, blueprint)
 	} else {
-		pruneSkippedTotal.WithLabelValues("apply_failed").Inc()
+		pruneSkippedTotal.WithLabelValues("apply_failed", visibilityPublic).Inc()
+		pruneSkippedTotal.WithLabelValues("apply_failed", visibilityPrivate).Inc()
 	}
 
 	statusErr := p.writeStatus(ctx, routes.Items, verdicts, gateways.Items, classes.Items)
@@ -165,15 +173,34 @@ func (p *Publisher) resyncInterval() time.Duration {
 // prune removes resources this controller owns that no route claims any more.
 // It touches nothing without the gw- prefix, because a hand-written blueprint
 // maintains other resources in the same organisation.
+//
+// The two sections are separate listings over separate tables, so they prune
+// independently: a private listing that fails says nothing about which public
+// resources are still wanted.
 func (p *Publisher) prune(ctx context.Context, desired pangolin.Blueprint) error {
-	log := ctrl.LoggerFrom(ctx)
+	return errors.Join(
+		pruneSection(ctx, visibilityPublic, desired.PublicResources,
+			p.Pangolin.ListPublicResources, p.Pangolin.DeletePublicResource),
+		pruneSection(ctx, visibilityPrivate, desired.PrivateResources,
+			p.Pangolin.ListPrivateResources, p.Pangolin.DeletePrivateResource),
+	)
+}
+
+func pruneSection[T any](
+	ctx context.Context,
+	visibility string,
+	desired map[string]T,
+	list func(context.Context) ([]pangolin.Resource, error),
+	del func(context.Context, int) error,
+) error {
+	log := ctrl.LoggerFrom(ctx).WithValues("visibility", visibility)
 
 	// A listing that fails halfway would look like "these resources are gone".
-	// Any error skips the prune entirely rather than deleting on a partial view.
-	live, err := p.Pangolin.ListPublicResources(ctx)
+	// Any error skips this section entirely rather than deleting on a partial view.
+	live, err := list(ctx)
 	if err != nil {
-		pruneSkippedTotal.WithLabelValues("list_failed").Inc()
-		return fmt.Errorf("listing public resources for the prune: %w", err)
+		pruneSkippedTotal.WithLabelValues("list_failed", visibility).Inc()
+		return fmt.Errorf("listing %s resources for the prune: %w", visibility, err)
 	}
 
 	var failures []error
@@ -181,19 +208,19 @@ func (p *Publisher) prune(ctx context.Context, desired pangolin.Blueprint) error
 		if !strings.HasPrefix(r.NiceID, gateway.KeyPrefix) {
 			continue
 		}
-		if _, wanted := desired.PublicResources[r.NiceID]; wanted {
+		if _, wanted := desired[r.NiceID]; wanted {
 			continue
 		}
 
-		if err := p.Pangolin.DeletePublicResource(ctx, r.ResourceID); err != nil {
+		if err := del(ctx, r.ResourceID); err != nil {
 			// Counted and retried next pass, never fatal: a blocked DELETE must not
 			// take the blueprint apply down with it.
-			pruneTotal.WithLabelValues("error").Inc()
+			pruneTotal.WithLabelValues("error", visibility).Inc()
 			log.Error(err, "deleting orphaned resource", "niceId", r.NiceID, "resourceId", r.ResourceID)
 			failures = append(failures, err)
 			continue
 		}
-		pruneTotal.WithLabelValues("success").Inc()
+		pruneTotal.WithLabelValues("success", visibility).Inc()
 		log.Info("deleted orphaned resource", "niceId", r.NiceID, "resourceId", r.ResourceID)
 	}
 	return errors.Join(failures...)

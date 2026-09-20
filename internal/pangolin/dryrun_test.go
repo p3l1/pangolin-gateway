@@ -13,8 +13,9 @@ import (
 // recordingClient fails loudly on any write, so the decorator is tested by the
 // absence of calls rather than by inspecting log output.
 type recordingClient struct {
-	t      *testing.T
-	listed int
+	t             *testing.T
+	listed        int
+	listedPrivate int
 }
 
 func (c *recordingClient) ApplyBlueprint(context.Context, Blueprint) error {
@@ -25,6 +26,16 @@ func (c *recordingClient) ApplyBlueprint(context.Context, Blueprint) error {
 func (c *recordingClient) DeletePublicResource(context.Context, int) error {
 	c.t.Error("DeletePublicResource reached the inner client during a dry run")
 	return nil
+}
+
+func (c *recordingClient) DeletePrivateResource(context.Context, int) error {
+	c.t.Error("DeletePrivateResource reached the inner client during a dry run")
+	return nil
+}
+
+func (c *recordingClient) ListPrivateResources(context.Context) ([]Resource, error) {
+	c.listedPrivate++
+	return []Resource{{ResourceID: 7, NiceID: "gw-demo-private"}}, nil
 }
 
 func (c *recordingClient) ListPublicResources(context.Context) ([]Resource, error) {
@@ -48,6 +59,27 @@ func TestDryRunLetsNoWriteThrough(t *testing.T) {
 	}
 	if err := d.DeletePublicResource(ctx, 42); err != nil {
 		t.Errorf("DeletePublicResource returned %v, want nil", err)
+	}
+	if err := d.DeletePrivateResource(ctx, 7); err != nil {
+		t.Errorf("DeletePrivateResource returned %v, want nil", err)
+	}
+}
+
+// Both prunes must stay visible in a rehearsal, so both listings pass through.
+func TestDryRunStillReadsBothSections(t *testing.T) {
+	inner := &recordingClient{t: t}
+	d := NewDryRun(inner, logr.Discard())
+	ctx := context.Background()
+
+	if _, err := d.ListPublicResources(ctx); err != nil {
+		t.Fatalf("ListPublicResources: %v", err)
+	}
+	if _, err := d.ListPrivateResources(ctx); err != nil {
+		t.Fatalf("ListPrivateResources: %v", err)
+	}
+	if inner.listed != 1 || inner.listedPrivate != 1 {
+		t.Errorf("inner client saw %d public and %d private listings, want one each",
+			inner.listed, inner.listedPrivate)
 	}
 }
 

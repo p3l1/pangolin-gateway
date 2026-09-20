@@ -19,7 +19,8 @@ pangolin:
   defaultSite: ""
   # The integration key, of the form <key_id>.<key_secret>. Supply it yourself;
   # this chart never creates a secret. The key needs three API actions:
-  # applyBlueprint, listResources and deleteResource.
+  # applyBlueprint, listResources and deleteResource; publishing private
+  # resources also needs listSiteResources and deleteSiteResource.
   apiKeySecret:
     name: ""
     key: apiKey

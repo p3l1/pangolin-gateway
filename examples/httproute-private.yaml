@@ -1,0 +1,23 @@
+# A route published as a private resource: reachable only through a connected
+# Pangolin client, never from the internet.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: internal
+  namespace: demo
+  annotations:
+    pangolin.p3l1.de/visibility: private
+    # Optional, comma-separated. Without either, only the organisation's admin
+    # role reaches the resource. Pangolin creates a role it does not know rather
+    # than refusing it, so a typo grants nobody anything instead of failing.
+    pangolin.p3l1.de/roles: Member, Operators
+    pangolin.p3l1.de/users: alice@example.com
+spec:
+  parentRefs:
+    - name: pangolin
+  hostnames:
+    - internal.example.com
+  rules:
+    - backendRefs:
+        - name: internal
+          port: 8080
