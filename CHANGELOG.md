@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/p3l1/pangolin-gateway/compare/v0.5.0...v0.6.0) (2026-10-05)
+
+
+### Features
+
+* restrict a public route to roles and users ([#28](https://github.com/p3l1/pangolin-gateway/issues/28)) ([f3e22fb](https://github.com/p3l1/pangolin-gateway/commit/f3e22fbabcf333d3f5ff29a79ab051afec17b169))
+
 ## [0.5.0](https://github.com/p3l1/pangolin-gateway/compare/v0.4.0...v0.5.0) (2026-09-20)
 
 
