@@ -352,15 +352,26 @@ func publicResource(
 	name, host, site, backendHost string,
 	backendPort int32,
 ) (*pangolin.PublicResource, error) {
-	// Roles and users grant access to a private resource; a proxied one is
-	// governed by its auth block, so honouring them here would be a lie.
-	if err := refuseAnnotations(r, "a public route",
-		"set "+AnnotationVisibility+": "+VisibilityPrivate+" to use it",
-		AnnotationRoles, AnnotationUsers); err != nil {
+	sso, err := ssoFor(r)
+	if err != nil {
 		return nil, err
 	}
 
-	sso, err := ssoFor(r)
+	// Without sign-in there is nobody to authorise, so a grant would be a lie.
+	if !sso {
+		if err := refuseAnnotations(r,
+			"a public route with "+AnnotationSSO+`: "false"`,
+			"turn sign-in on or drop the grant",
+			AnnotationRoles, AnnotationUsers); err != nil {
+			return nil, err
+		}
+	}
+
+	roles, err := grantList(r, AnnotationRoles)
+	if err != nil {
+		return nil, err
+	}
+	users, err := grantList(r, AnnotationUsers)
 	if err != nil {
 		return nil, err
 	}
@@ -392,9 +403,14 @@ func publicResource(
 		Name:       name,
 		Mode:       pangolin.ModeHTTP,
 		FullDomain: host,
-		Auth:       &pangolin.Auth{SSOEnabled: sso, BasicAuth: basicAuth},
-		Targets:    []pangolin.Target{target},
-		Rules:      rules,
+		Auth: &pangolin.Auth{
+			SSOEnabled: sso,
+			BasicAuth:  basicAuth,
+			SSORoles:   roles,
+			SSOUsers:   users,
+		},
+		Targets: []pangolin.Target{target},
+		Rules:   rules,
 	}, nil
 }
 

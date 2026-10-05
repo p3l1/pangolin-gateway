@@ -3,6 +3,7 @@
 package gateway
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -265,19 +266,62 @@ func TestRenderRejectsAnnotationsAPrivateResourceCannotHonour(t *testing.T) {
 	}
 }
 
-// Roles and users have no meaning on a proxied resource, and quietly ignoring
-// them would leave the author believing access is restricted.
-func TestRenderRejectsGrantsOnAPublicRoute(t *testing.T) {
+// A proxied resource carries its grants in the auth block, where Pangolin's
+// schema takes sso-roles and sso-users.
+func TestRenderPutsGrantsIntoTheAuthBlockOfAPublicRoute(t *testing.T) {
+	r := route("demo", "web", annotate(map[string]string{
+		AnnotationRoles: "Member, Operators",
+		AnnotationUsers: "alice@example.com,bob@example.com",
+	}))
+
+	bp, _ := Render(defaultInputs(r))
+
+	entry, ok := bp.PublicResources["gw-demo-web"]
+	if !ok {
+		t.Fatalf("no gw-demo-web entry; have %v", bp.PublicResources)
+	}
+	if entry.Auth == nil {
+		t.Fatal("auth = nil, want sso-enabled with grants")
+	}
+	if got, want := entry.Auth.SSORoles, []string{"Member", "Operators"}; !slices.Equal(got, want) {
+		t.Errorf("sso-roles = %v, want %v", got, want)
+	}
+	want := []string{"alice@example.com", "bob@example.com"}
+	if got := entry.Auth.SSOUsers; !slices.Equal(got, want) {
+		t.Errorf("sso-users = %v, want %v", got, want)
+	}
+}
+
+// Without sign-in there is nobody to authorise, and quietly dropping the grant
+// would leave the author believing access is restricted.
+func TestRenderRejectsGrantsOnAPublicRouteWithoutSSO(t *testing.T) {
 	for _, annotation := range []string{AnnotationRoles, AnnotationUsers} {
 		t.Run(annotation, func(t *testing.T) {
-			msg := rejectedRoute(t, annotate(map[string]string{annotation: "Member"}))
+			msg := rejectedRoute(t, annotate(map[string]string{
+				AnnotationSSO: "false",
+				annotation:    "Member",
+			}))
 			if !strings.Contains(msg, annotation) {
 				t.Errorf("message %q does not name %q", msg, annotation)
 			}
-			if !strings.Contains(msg, VisibilityPrivate) {
-				t.Errorf("message %q does not say which visibility honours it", msg)
+			if !strings.Contains(msg, AnnotationSSO) {
+				t.Errorf("message %q does not name %q", msg, AnnotationSSO)
 			}
 		})
+	}
+}
+
+// An unannotated route leaves the keys out, which Pangolin reads as "keep what
+// you have" - otherwise publishing would revoke grants made in its dashboard.
+func TestRenderOmitsGrantsWhenAPublicRouteCarriesNone(t *testing.T) {
+	bp, _ := Render(defaultInputs(route("demo", "web")))
+
+	entry := bp.PublicResources["gw-demo-web"]
+	if entry.Auth == nil {
+		t.Fatal("auth = nil, want sso-enabled")
+	}
+	if entry.Auth.SSORoles != nil || entry.Auth.SSOUsers != nil {
+		t.Errorf("auth = %+v, want no grant keys", entry.Auth)
 	}
 }
 

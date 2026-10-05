@@ -84,3 +84,23 @@ side the routes sit on.
 As for public resources, the base domain must be registered and verified in the
 organisation or the apply throws. That check is not yet mirrored locally, and it
 fails the whole document when it trips.
+
+## Grants sit in different places
+
+`roles` and `users` reach a private resource on the resource itself, as `roles` and
+`users`. A public resource takes them inside its `auth` block instead, as `sso-roles`
+and `sso-users` — Pangolin's schema puts authentication there, and `auth` exists only
+for HTTP public resources
+([docs](https://docs.pangolin.net/manage/blueprints)). The controller therefore reads
+one pair of annotations and writes it to whichever place the chosen visibility uses.
+
+Both keys are omitted when the route annotates neither, which leaves whatever the
+dashboard granted untouched. Verified in `server/lib/blueprints/publicResources.ts`
+at `1.24.0`: every path guards on the key being present — `if (resourceData.auth?.["sso-roles"])`
+on create, `!== undefined` on update — and skips it otherwise.
+
+A key that *is* present is authoritative. The setters remove what the list omits
+(`if (role && !ssoRoles.includes(role.name))`), so deleting an entry from the annotation
+revokes that access. An empty list would therefore revoke everything; Go's `omitempty`
+never sends one, so annotating a route is the only way to hand its access list to Git.
+

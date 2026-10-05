@@ -397,3 +397,53 @@ func TestBlueprintCarriesBothSectionsWhenEmpty(t *testing.T) {
 		t.Errorf("empty blueprint = %s, want %s", got, want)
 	}
 }
+
+// Grants ride in the auth block. The keys are omitted when unset, because
+// Pangolin leaves an absent setting untouched and sending empty lists would
+// revoke what its dashboard granted.
+func TestBlueprintMarshalsGrantsInTheAuthBlock(t *testing.T) {
+	auth := func(a *Auth) map[string]any {
+		raw, err := json.Marshal(Blueprint{PublicResources: map[string]PublicResource{
+			"gw-demo-web": {Name: "demo/web", Mode: ModeHTTP, Auth: a},
+		}})
+		if err != nil {
+			t.Fatalf("marshalling blueprint: %v", err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("unmarshalling blueprint: %v", err)
+		}
+		resources := got["public-resources"].(map[string]any)
+		entry := resources["gw-demo-web"].(map[string]any)
+		out, ok := entry["auth"].(map[string]any)
+		if !ok {
+			t.Fatalf("no auth object in %s", raw)
+		}
+		return out
+	}
+
+	with := auth(&Auth{
+		SSOEnabled: true,
+		SSORoles:   []string{"Member"},
+		SSOUsers:   []string{"alice@example.com"},
+	})
+	for key, want := range map[string][]any{
+		"sso-roles": {"Member"},
+		"sso-users": {"alice@example.com"},
+	} {
+		got, ok := with[key].([]any)
+		if !ok {
+			t.Fatalf("auth[%q] = %v, want a list", key, with[key])
+		}
+		if len(got) != 1 || got[0] != want[0] {
+			t.Errorf("auth[%q] = %v, want %v", key, got, want)
+		}
+	}
+
+	without := auth(&Auth{SSOEnabled: true})
+	for _, key := range []string{"sso-roles", "sso-users"} {
+		if _, set := without[key]; set {
+			t.Errorf("auth[%q] is present on an ungranted resource", key)
+		}
+	}
+}

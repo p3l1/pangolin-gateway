@@ -103,6 +103,11 @@ type Auth struct {
 	// Omitting the block removes the protection: Pangolin clears the rows that
 	// hold it on every apply before reading this one back.
 	BasicAuth *BasicAuth `json:"basic-auth,omitempty"`
+
+	// Omitted when unset: Pangolin leaves an absent setting untouched, so an
+	// empty list would revoke what its dashboard granted.
+	SSORoles []string `json:"sso-roles,omitempty"`
+	SSOUsers []string `json:"sso-users,omitempty"`
 }
 
 // BasicAuth lets a client past with an Authorization header instead of a login.
