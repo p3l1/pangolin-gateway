@@ -100,6 +100,8 @@ metadata:
   annotations:
     pangolin.p3l1.de/display-name: Demo Web   # shown in Pangolin; defaults to demo/web
     pangolin.p3l1.de/sso: "true"              # default; omit to keep SSO on
+    pangolin.p3l1.de/roles: Member            # optional, who gets through the sign-in
+    pangolin.p3l1.de/users: alice@example.com # optional, comma-separated
     pangolin.p3l1.de/site: edge-site          # defaults to --default-site
     pangolin.p3l1.de/healthcheck-path: /healthz  # switches the check on
     pangolin.p3l1.de/healthcheck-interval: "30"  # seconds, optional
@@ -125,6 +127,16 @@ resource can keep the name people already recognise.
 `pangolin.p3l1.de/sso` defaults to `"true"` on purpose: forgetting the annotation must not
 publish a service unprotected. A value that is neither `"true"` nor `"false"` is rejected
 rather than guessed.
+
+`pangolin.p3l1.de/roles` and `pangolin.p3l1.de/users` restrict who gets through that
+sign-in. On a public route they become `sso-roles` and `sso-users` inside the resource's
+`auth` block; on a private one they sit on the resource itself. Both are refused when
+`sso` is `"false"`, because then there is nobody to authorise.
+
+A route carrying neither keeps both keys out of the blueprint, which leaves whatever
+Pangolin's own dashboard granted untouched — publishing must not revoke access nobody
+asked it to touch. Annotating either one hands that resource's access list to Git: both
+lists are then sent in full, so deleting an entry revokes it.
 
 ## Healthchecks
 
