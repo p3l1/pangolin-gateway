@@ -15,8 +15,6 @@ import (
 
 const testControllerName = "p3l1.de/pangolin"
 
-func ptr[T any](v T) *T { return &v }
-
 // ourClass is a GatewayClass this controller serves; foreignClass is one it must ignore.
 func ourClass(name string) gatewayv1.GatewayClass {
 	return gatewayv1.GatewayClass{

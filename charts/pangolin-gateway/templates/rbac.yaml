@@ -44,6 +44,22 @@ rules:
     - get
     - patch
     - update
+  - apiGroups:
+    - pangolin.p3l1.de
+    resources:
+    - privateresources
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - pangolin.p3l1.de
+    resources:
+    - privateresources/status
+    verbs:
+    - get
+    - patch
+    - update
   # END GENERATED
 ---
 apiVersion: rbac.authorization.k8s.io/v1

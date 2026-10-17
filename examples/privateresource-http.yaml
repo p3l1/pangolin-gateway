@@ -1,0 +1,20 @@
+# A real hostname with a valid certificate, reachable only with a connected
+# Pangolin client. scheme and destinationPort describe the way from the site to
+# the destination; clients always connect over ssl.
+apiVersion: pangolin.p3l1.de/v1alpha1
+kind: PrivateResource
+metadata:
+  name: home-assistant
+  namespace: home-assistant
+spec:
+  displayName: Home Assistant
+  mode: http
+  fullDomain: home.example.com
+  ssl: true
+  scheme: http
+  destination: home-assistant.home-assistant.svc.cluster.local
+  destinationPort: 8123
+  # Replaced on every apply. Pangolin creates a role it does not know, so a
+  # typo grants nobody anything instead of failing.
+  roles: [Member]
+  users: [alice@example.com]

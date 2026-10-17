@@ -38,3 +38,19 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - pangolin.p3l1.de
+  resources:
+  - privateresources
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - pangolin.p3l1.de
+  resources:
+  - privateresources/status
+  verbs:
+  - get
+  - patch
+  - update

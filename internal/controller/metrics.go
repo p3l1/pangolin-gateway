@@ -40,10 +40,16 @@ var (
 		Name: "pangolin_gateway_routes_rejected",
 		Help: "Served routes the renderer refused to publish.",
 	})
+
+	privateResourcesRejected = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "pangolin_gateway_private_resources_rejected",
+		Help: "PrivateResources the renderer refused to publish.",
+	})
 )
 
 func init() {
 	metrics.Registry.MustRegister(
 		publishTotal, pruneTotal, pruneSkippedTotal, resourcesDesired, routesRejected,
+		privateResourcesRejected,
 	)
 }

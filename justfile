@@ -67,9 +67,9 @@ lint_values := "--set pangolin.endpoint=https://api.example.com/v1 \
 lint:
     go tool golangci-lint run ./...
     helm lint {{chart}} {{lint_values}}
-    # GatewayClass is a Gateway API CRD kind, absent from kubeconform's default
-    # schema catalogue; the rest of the chart is still checked strictly.
-    helm template {{chart}} {{lint_values}} | kubeconform -strict -summary -skip GatewayClass -
+    # kubeconform's default catalogue has no schema for GatewayClass, nor for
+    # CustomResourceDefinition; envtest and k3d load the CRD for real instead.
+    helm template {{chart}} {{lint_values}} | kubeconform -strict -summary -skip GatewayClass,CustomResourceDefinition -
 
 # Resolves the Gateway API CRDs from the module cache, so the schemas the tests
 # run against are the ones go.mod pins rather than a separately drifting copy.
@@ -118,14 +118,15 @@ test:
 build:
     go build -ldflags "-s -w -X github.com/p3l1/pangolin-gateway/internal/version.Version={{tag}} -X github.com/p3l1/pangolin-gateway/internal/version.Commit=$(git rev-parse --short HEAD)" -o bin/manager ./cmd
 
-# This project defines no CRDs, so controller-gen runs for RBAC markers only.
+# Deepcopy and CRDs from api/, RBAC from the markers in internal/controller.
 generate:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ ! -d internal/controller ] || ! compgen -G "internal/controller/*.go" >/dev/null; then
-        echo "no internal/controller yet; nothing to generate"
-        exit 0
-    fi
+    go tool controller-gen object:headerFile=hack/boilerplate.go.txt paths=./api/...
+    # Stale CRDs of a removed kind would otherwise survive in the chart.
+    rm -rf config/crd/bases
+    go tool controller-gen crd paths=./api/... output:crd:artifacts:config=config/crd/bases
+    sh hack/crd-to-chart.sh config/crd/bases {{chart}}/templates/crds.yaml
     go tool controller-gen rbac:roleName=manager-role paths=./internal/controller/... output:rbac:artifacts:config=config/rbac
     # controller-gen exits 0 and writes nothing when it finds no +kubebuilder:rbac
     # markers at package level (a common cause: the comment block sits directly
@@ -137,13 +138,14 @@ generate:
     fi
     sh hack/rbac-to-chart.sh config/rbac/role.yaml {{chart}}/templates/rbac.yaml
 
-# Fails when generated output is not committed, or the two chart versions drift.
+# Fails when generated output (deepcopy, CRDs, RBAC) is not committed, or the
+# two chart versions drift.
 verify: generate
     #!/usr/bin/env bash
     set -euo pipefail
     # --exit-code ignores untracked files, so it misses a file generated for the
     # first time; status --porcelain sees new and uncommitted files alike.
-    changes=$(git status --porcelain -- config {{chart}})
+    changes=$(git status --porcelain -- api config {{chart}})
     if [ -n "$changes" ]; then
         echo "generated output does not match what is committed:" >&2
         echo "$changes" >&2

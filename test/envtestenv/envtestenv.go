@@ -7,25 +7,36 @@ package envtestenv
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 
-	"k8s.io/apimachinery/pkg/runtime"
+	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"github.com/p3l1/pangolin-gateway/api/v1alpha1"
 )
 
-// CRDPathEnv names the directory holding the Gateway API CRDs. This project
-// defines none of its own, so `just test` resolves them from the module cache —
-// the schemas the tests run against are then the ones go.mod pins.
+// CRDPathEnv names the directory holding the Gateway API CRDs. `just test`
+// resolves them from the module cache, so the schemas the tests run against
+// are the ones go.mod pins.
 const CRDPathEnv = "GATEWAY_API_CRDS"
 
-// Start boots an API server with the Gateway API CRDs and stops it with the test.
-// addToScheme registers extra API types on top of the built-in client-go scheme
-// and the Gateway API types, which are always present. The returned client is
-// WithWatch (a superset of Client) so callers that need to wrap it can.
-func Start(t *testing.T, addToScheme ...func(*runtime.Scheme) error) (client.WithWatch, context.Context) {
+// projectCRDs is this project's own generated CRDs, found relative to this file
+// so the harness works from whichever package directory go test runs it in.
+func projectCRDs() string {
+	_, file, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(file), "..", "..", "config", "crd", "bases")
+}
+
+// Start boots an API server with the Gateway API CRDs and this project's own,
+// and stops it with the test. addToScheme registers extra API types on top of
+// the client-go, Gateway API and pangolin.p3l1.de types, which are always
+// present. The client is WithWatch (a superset of Client) so callers can wrap it.
+func Start(t *testing.T, addToScheme ...func(*apiruntime.Scheme) error) (client.WithWatch, context.Context) {
 	t.Helper()
 
 	crds := os.Getenv(CRDPathEnv)
@@ -34,7 +45,7 @@ func Start(t *testing.T, addToScheme ...func(*runtime.Scheme) error) (client.Wit
 	}
 
 	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{crds},
+		CRDDirectoryPaths:     []string{crds, projectCRDs()},
 		ErrorIfCRDPathMissing: true,
 	}
 
@@ -48,12 +59,15 @@ func Start(t *testing.T, addToScheme ...func(*runtime.Scheme) error) (client.Wit
 		}
 	})
 
-	scheme := runtime.NewScheme()
+	scheme := apiruntime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		t.Fatalf("registering client-go scheme: %v", err)
 	}
 	if err := gatewayv1.Install(scheme); err != nil {
 		t.Fatalf("registering gateway-api scheme: %v", err)
+	}
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("registering pangolin.p3l1.de scheme: %v", err)
 	}
 	for _, add := range addToScheme {
 		if err := add(scheme); err != nil {

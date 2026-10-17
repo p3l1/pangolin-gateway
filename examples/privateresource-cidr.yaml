@@ -1,0 +1,14 @@
+# A whole network behind a site. No alias: clients reach the addresses directly.
+apiVersion: pangolin.p3l1.de/v1alpha1
+kind: PrivateResource
+metadata:
+  name: lan
+  namespace: infra
+spec:
+  displayName: Home LAN
+  mode: cidr
+  destination: 192.168.10.0/24
+  tcpPorts: "22,443,8000-9000"
+  udpPorts: "53"
+  disableIcmp: false
+  roles: [Operators]
