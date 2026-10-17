@@ -391,6 +391,12 @@ func listPages[D, T any](
 				what, page, p.Page)
 		}
 
+		// Rows without a total cannot tell a complete listing from a first page,
+		// and a short listing would make every later name look unknown.
+		if len(items) > 0 && p.Total == 0 {
+			return nil, fmt.Errorf("listing %s returned rows but no pagination total", what)
+		}
+
 		all = append(all, items...)
 		if len(items) == 0 || len(all) >= p.Total {
 			return all, nil

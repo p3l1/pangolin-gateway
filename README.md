@@ -425,8 +425,10 @@ grants on every apply and writes back what the document lists, keeping only the 
 Omitting `roles`, `users` and `machines` therefore leaves the resource to org admins and
 revokes anything granted in the dashboard. `users` match a username or an e-mail address,
 `machines` a machine client's niceId. An unknown role is **created**, not refused; the
-`Admin` role is refused, since it has access anyway. Unknown users and machines are rejected
-before the apply when `listUsers`/`listClients` are available.
+`Admin` role is refused, since it has access anyway. When `listUsers`/`listClients` are
+available, a `users` or `machines` list **none** of whose names exist is rejected — Pangolin
+would fail the whole apply for it — while a name that does not exist among others is dropped by
+Pangolin and named in the `Accepted` message.
 
 Resources from both kinds share the collision check: a full-domain, an alias or a route
 hostname claimed twice goes to the oldest object, and the other is rejected with
@@ -482,7 +484,8 @@ niceId in `status.resourceKey` while it is published:
 | Publish to Pangolin failed | `Accepted: True`, `Programmed: False`, `PublishFailed` |
 | Dry run | `Accepted: True`, `Programmed: False`, `DryRun` |
 | Invalid field, port list, alias or destination | `Accepted: False`, `InvalidSpec` |
-| Site, machine or user does not exist | `Accepted: False`, `UnknownSite` / `UnknownMachine` / `UnknownUser` |
+| Site does not exist; no listed machine or user exists | `Accepted: False`, `UnknownSite` / `UnknownMachine` / `UnknownUser` |
+| Some listed machines or users do not exist | `Accepted: True`, the `Accepted` message names them |
 | Key, hostname or alias claimed by an older object | `Accepted: False`, `DuplicateResourceKey` / `DuplicateHostname` |
 
 `kubectl get privateresources` (short name `ppr`) shows both conditions.

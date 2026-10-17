@@ -291,6 +291,8 @@ func TestRenderRejectsAnInvalidPrivateResource(t *testing.T) {
 			"alias is required"},
 		"host with an alias that is no FQDN": {host(func(s *v1alpha1.PrivateResourceSpec) { s.Alias = "tekton" }),
 			"not a fully qualified domain name"},
+		"wildcard alias before a hostname": {host(func(s *v1alpha1.PrivateResourceSpec) { s.Alias = "*.tekton.internal" }),
+			"must not contain wildcards"},
 		"host with a URL as destination": {host(func(s *v1alpha1.PrivateResourceSpec) { s.Destination = "http://tekton" }),
 			"neither an IP address nor a hostname"},
 		"host with fullDomain": {host(func(s *v1alpha1.PrivateResourceSpec) { s.FullDomain = "x.example.com" }),
@@ -353,7 +355,7 @@ func TestRenderRejectsUnknownNamesBeforePangolinDoes(t *testing.T) {
 		"site": {func(in *Inputs) { in.KnownSites = map[string]bool{"other": true} },
 			ReasonUnknownSite, `site "intent-anniella-pulchra"`},
 		"machine": {func(in *Inputs) { in.KnownMachines = map[string]bool{"other": true} },
-			ReasonUnknownMachine, `machine client "fine-mastigoproctus-giganteus"`},
+			ReasonUnknownMachine, `none of the machines exist in this organisation ("fine-mastigoproctus-giganteus")`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			in := resourceInputs(tektonWebhook())
@@ -367,7 +369,7 @@ func TestRenderRejectsUnknownNamesBeforePangolinDoes(t *testing.T) {
 
 	t.Run("user", func(t *testing.T) {
 		pr := mcpDocuments()
-		pr.Spec.Users = []string{"alice", "bob@example.com"}
+		pr.Spec.Users = []string{"ghost", "bob@example.com"}
 		in := resourceInputs(pr)
 		in.KnownUsers = map[string]bool{"alice": true}
 		got := rejectedResource(t, in)
@@ -375,6 +377,37 @@ func TestRenderRejectsUnknownNamesBeforePangolinDoes(t *testing.T) {
 			t.Errorf("Accepted = %+v, want %s naming bob@example.com", got, ReasonUnknownUser)
 		}
 	})
+}
+
+// Pangolin drops a name it cannot find while another resolves. Rejecting the
+// resource for it would unpublish it for everyone the list still grants.
+func TestRenderPublishesGrantsOfWhichSomeResolveWithANote(t *testing.T) {
+	pr := tektonWebhook()
+	pr.Spec.Machines = []string{"fine-mastigoproctus-giganteus", "departed-runner"}
+	pr.Spec.Users = []string{"alice", "bob@example.com"}
+	in := resourceInputs(pr)
+	in.KnownMachines = map[string]bool{"fine-mastigoproctus-giganteus": true}
+	in.KnownUsers = map[string]bool{"alice": true}
+
+	v := resourceVerdictFor(t, RenderAll(in), pr.Namespace, pr.Name)
+	if !v.Published() || v.Accepted.Status != metav1.ConditionTrue {
+		t.Fatalf("verdict = %+v, want published", v)
+	}
+	for _, want := range []string{`users "bob@example.com" do not exist`, `machines "departed-runner" do not exist`} {
+		if !strings.Contains(v.Accepted.Message, want) {
+			t.Errorf("message = %q, want it to say %q", v.Accepted.Message, want)
+		}
+	}
+}
+
+// A wildcard alias is fine in front of an IP; only a hostname needs a plain one.
+func TestRenderAcceptsAWildcardAliasForAnIP(t *testing.T) {
+	pr := privateResourceObj("infra", "nas", v1alpha1.PrivateResourceSpec{
+		Mode: v1alpha1.ModeHost, Destination: "10.0.0.5", Alias: "nas-0?.homelab.internal",
+	})
+	if v := resourceVerdictFor(t, RenderAll(resourceInputs(pr)), "infra", "nas"); !v.Published() {
+		t.Errorf("rejected: %+v", v.Accepted)
+	}
 }
 
 // A listing that failed leaves its map nil, and the check then defers to Pangolin.
@@ -526,5 +559,15 @@ func TestRenderAppliesThePrivateGrantChecksToRoutes(t *testing.T) {
 	if v := verdictFor(t, verdicts, "demo", "web"); v.Published() ||
 		!strings.Contains(v.Accepted.Message, `"ghost"`) {
 		t.Errorf("verdict = %+v, want rejected naming the unknown user", v)
+	}
+
+	// One departed user among others must not unpublish the route.
+	in = defaultInputs(route("demo", "web", private(),
+		annotate(map[string]string{AnnotationUsers: "alice, ghost"})))
+	in.KnownUsers = map[string]bool{"alice": true}
+	_, verdicts = Render(in)
+	if v := verdictFor(t, verdicts, "demo", "web"); !v.Published() ||
+		!strings.Contains(v.Accepted.Message, `users "ghost" do not exist`) {
+		t.Errorf("verdict = %+v, want published with a note on the unknown user", v)
 	}
 }

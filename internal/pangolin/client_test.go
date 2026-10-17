@@ -419,6 +419,19 @@ func TestListUsersStopsOnAStallingPage(t *testing.T) {
 	}
 }
 
+// Without a total there is no telling a complete listing from its first page,
+// and a short one would make later names look unknown.
+func TestListUsersRefusesRowsWithoutATotal(t *testing.T) {
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"success":true,"error":false,"message":"ok","status":200,"data":{
+			"users":[{"username":"alice"}]}}`)
+	}))
+
+	if got, err := c.ListUsers(context.Background()); err == nil {
+		t.Fatalf("want an error for a listing without a total, got %d users", len(got))
+	}
+}
+
 func TestGranteeListingAuthErrorsNameTheirAction(t *testing.T) {
 	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)

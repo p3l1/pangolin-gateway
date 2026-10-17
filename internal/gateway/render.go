@@ -126,6 +126,9 @@ type rendered struct {
 	// Every name the entry makes resolvable: a full-domain, an alias, or none.
 	hostnames []string
 
+	// Caveats of an accepted entry, appended to its Accepted message.
+	notes []string
+
 	public  *pangolin.PublicResource
 	private *pangolin.PrivateResource
 }
@@ -220,7 +223,7 @@ func RenderAll(in Inputs) Result {
 			continue
 		}
 
-		base.Accepted, base.ResolvedRefs = accepted(), resolved()
+		base.Accepted, base.ResolvedRefs = withNotes(accepted(), entry.notes), resolved()
 		verdicts[nameOf(r)] = base
 		candidates = append(candidates, candidate{
 			claimant:  claimant{kind: kindHTTPRoute, name: nameOf(r)},
@@ -240,6 +243,7 @@ func RenderAll(in Inputs) Result {
 			resources[name] = v
 			continue
 		}
+		v.Accepted = withNotes(v.Accepted, entry.notes)
 		resources[name] = v
 		candidates = append(candidates, candidate{
 			claimant:  claimant{kind: kindPrivateResource, name: name},
@@ -423,11 +427,12 @@ func translate(r gatewayv1.HTTPRoute, in Inputs) (rendered, *ConditionResult) {
 	entry := rendered{key: Key(r.Namespace, r.Name), hostnames: []string{host}}
 
 	if visibility == VisibilityPrivate {
-		resource, err := privateResource(r, in, name, host, site, backendHost, backendPort)
+		resource, notes, err := privateResource(r, in, name, host, site, backendHost, backendPort)
 		if err != nil {
 			return fail(gatewayv1.RouteReasonUnsupportedValue, "%s", err)
 		}
 		entry.private = resource
+		entry.notes = notes
 		return entry, nil
 	}
 
@@ -512,31 +517,32 @@ func privateResource(
 	in Inputs,
 	name, host, site, backendHost string,
 	backendPort int32,
-) (*pangolin.PrivateResource, error) {
+) (*pangolin.PrivateResource, []string, error) {
 	// A private resource has no auth block, no targets and no rules. Publishing
 	// one while dropping any of these would protect it differently from what the
 	// route says, so each is refused rather than ignored.
 	if err := refuseAnnotations(r, "a private route",
 		"access is granted by "+AnnotationRoles+" and "+AnnotationUsers,
 		AnnotationSSO, AnnotationAccessRules, AnnotationBasicAuth); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := refuseAnnotations(r, "a private route",
 		"a private resource has no targets to check",
 		healthcheckAnnotations...); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	roles, err := grantList(r, AnnotationRoles)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	users, err := grantList(r, AnnotationUsers)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := checkPrivateGrants(roles, users, nil, in); err != nil {
-		return nil, err
+	notes, gerr := checkPrivateGrants(roles, users, nil, in)
+	if gerr != nil {
+		return nil, nil, gerr
 	}
 
 	return &pangolin.PrivateResource{
@@ -549,7 +555,7 @@ func privateResource(
 		Scheme:          pangolin.SchemeHTTP,
 		Roles:           roles,
 		Users:           users,
-	}, nil
+	}, notes, nil
 }
 
 func fail(

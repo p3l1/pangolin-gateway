@@ -85,11 +85,14 @@ values that would be overwritten.
 path query `siteResources.alias` and throw `Alias … already in use` inside the
 transaction, failing the whole document. The renderer resolves alias collisions
 the same way as hostnames — oldest wins — and counts aliases, full-domains and
-route hostnames as one namespace, compared case-insensitively.
+route hostnames as one namespace, compared case-insensitively. An alias held by a
+resource this controller does not own — one made in the dashboard or by a
+hand-written blueprint — is not visible to it, and still fails the apply.
 
 **The schema's refinements are mirrored**, because each fails the whole
 document: a host destination must be an IP or a hostname, and a hostname needs
-an alias; a cidr destination must parse as a CIDR block; an alias must be a
+an alias without wildcards (the refine tests it against the plain domain
+pattern); a cidr destination must parse as a CIDR block; an alias must be a
 fully qualified name (wildcards `*` and `?` allowed); port lists must be `"*"`,
 empty, or ports and ranges between 1 and 65535.
 
@@ -135,11 +138,14 @@ at 1.22.0 (1.24.0 guards it; 1.23 was not checked).
 The controller therefore checks both before the apply, like sites: it lists
 `GET /org/{orgId}/clients?status=active,blocked,archived` (action `listClients`)
 and `GET /org/{orgId}/users` (action `listUsers`), only while some object names
-a machine or a user, and rejects the object naming one it cannot find — stricter
-than Pangolin, which would drop it. The clients listing returns machine clients
-only, so a user device's niceId is rejected; grant the user instead. When either
+a machine or a user. An object whose list resolves to nothing is rejected; one
+whose list resolves only in part is published, since rejecting it would revoke
+access for every name that does resolve, and its `Accepted` message names the
+ones Pangolin will drop. The clients listing returns machine clients only, so a
+user device's niceId counts as unknown; grant the user instead. When either
 listing fails, its check is skipped with a logged error and Pangolin is the
-authority again.
+authority again. Both listings honour `page` and report it back, and a page
+without a pagination total is treated as a failed listing.
 
 ## Fields Pangolin decides for itself
 

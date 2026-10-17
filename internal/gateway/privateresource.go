@@ -60,6 +60,15 @@ func PrivateResourceKey(namespace, name string) string {
 	return PrivateResourceKeyPrefix + namespace + "-" + name
 }
 
+// withNotes appends what was accepted but will not take effect, so the condition
+// says so instead of reading as a clean success.
+func withNotes(c ConditionResult, notes []string) ConditionResult {
+	if len(notes) > 0 {
+		c.Message += "; " + strings.Join(notes, "; ")
+	}
+	return c
+}
+
 func resourceAccepted() ConditionResult {
 	return ConditionResult{
 		Status:  metav1.ConditionTrue,
@@ -139,6 +148,11 @@ func translatePrivateResource(pr v1alpha1.PrivateResource, in Inputs) (rendered,
 			if spec.Alias != "" && !aliasPattern.MatchString(spec.Alias) {
 				return invalid("alias %q is not a fully qualified domain name", spec.Alias)
 			}
+			// Pangolin's schema takes a wildcard alias only in front of an IP.
+			if !isIP && !hostnamePattern.MatchString(spec.Alias) {
+				return invalid("alias %q must not contain wildcards when the destination is a hostname",
+					spec.Alias)
+			}
 			out.Alias = spec.Alias
 			if spec.Alias != "" {
 				entry.hostnames = []string{spec.Alias}
@@ -203,10 +217,12 @@ func translatePrivateResource(pr v1alpha1.PrivateResource, in Inputs) (rendered,
 		return invalid("mode %q is not supported; use host, cidr or http", spec.Mode)
 	}
 
-	if err := checkPrivateGrants(spec.Roles, spec.Users, spec.Machines, in); err != nil {
-		c := ConditionResult{Status: metav1.ConditionFalse, Reason: err.reason, Message: err.msg}
+	notes, gerr := checkPrivateGrants(spec.Roles, spec.Users, spec.Machines, in)
+	if gerr != nil {
+		c := ConditionResult{Status: metav1.ConditionFalse, Reason: gerr.reason, Message: gerr.msg}
 		return rendered{}, &c
 	}
+	entry.notes = notes
 	out.Roles = spec.Roles
 	out.Users = spec.Users
 	out.Machines = spec.Machines
@@ -238,42 +254,55 @@ type grantError struct {
 func (e *grantError) Error() string { return e.msg }
 
 // checkPrivateGrants mirrors what Pangolin rejects the whole document for: the
-// Admin role, and a users or machines list none of whose names resolve. It is
-// stricter than that, refusing any single unknown name Pangolin would drop.
-func checkPrivateGrants(roles, users, machines []string, in Inputs) *grantError {
+// Admin role, and a users or machines list none of whose names resolve. A name
+// Pangolin would merely drop comes back as a note instead.
+func checkPrivateGrants(roles, users, machines []string, in Inputs) ([]string, *grantError) {
 	for _, l := range []struct {
 		name    string
 		entries []string
 	}{{"roles", roles}, {"users", users}, {"machines", machines}} {
 		for _, e := range l.entries {
 			if strings.TrimSpace(e) == "" {
-				return &grantError{ReasonInvalidSpec, l.name + " has an empty entry"}
+				return nil, &grantError{ReasonInvalidSpec, l.name + " has an empty entry"}
 			}
 		}
 	}
 	for _, r := range roles {
 		if r == adminRole {
-			return &grantError{ReasonInvalidSpec,
+			return nil, &grantError{ReasonInvalidSpec,
 				"roles must not name Admin; the admin role reaches every private resource anyway"}
 		}
 	}
-	if in.KnownUsers != nil {
-		for _, u := range users {
-			if !in.KnownUsers[u] {
-				return &grantError{ReasonUnknownUser,
-					fmt.Sprintf("user %q is neither a username nor an e-mail address in this organisation", u)}
+
+	var notes []string
+	for _, l := range []struct {
+		name, reason string
+		entries      []string
+		known        map[string]bool
+	}{
+		{"users", ReasonUnknownUser, users, in.KnownUsers},
+		{"machines", ReasonUnknownMachine, machines, in.KnownMachines},
+	} {
+		if l.known == nil || len(l.entries) == 0 {
+			continue
+		}
+		var unknown []string
+		for _, e := range l.entries {
+			if !l.known[e] {
+				unknown = append(unknown, strconv.Quote(e))
 			}
 		}
-	}
-	if in.KnownMachines != nil {
-		for _, m := range machines {
-			if !in.KnownMachines[m] {
-				return &grantError{ReasonUnknownMachine,
-					fmt.Sprintf("machine client %q does not exist in this organisation", m)}
-			}
+		switch {
+		case len(unknown) == len(l.entries):
+			return nil, &grantError{l.reason, fmt.Sprintf(
+				"none of the %s exist in this organisation (%s), which fails Pangolin's whole apply",
+				l.name, strings.Join(unknown, ", "))}
+		case len(unknown) > 0:
+			notes = append(notes, fmt.Sprintf("%s %s do not exist and are ignored by Pangolin",
+				l.name, strings.Join(unknown, ", ")))
 		}
 	}
-	return nil
+	return notes, nil
 }
 
 // checkPortRanges mirrors Pangolin's portRangeStringSchema: empty, "*", or a

@@ -22,6 +22,7 @@ chart_crds=$2
 				next
 			}
 			{ print }
+			END { if (!done) { print "no metadata.annotations in " FILENAME > "/dev/stderr"; exit 1 } }
 		' "$crd"
 	done
 	echo '{{- end }}'

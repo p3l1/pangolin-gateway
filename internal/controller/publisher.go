@@ -425,10 +425,17 @@ func (p *Publisher) writeResourceStatus(
 			},
 			programmed,
 		)
-		// Empty once rejected. A failed apply keeps it: the live resource, if
-		// any, still sits under that key.
-		if r.Status.ResourceKey != v.Key {
-			r.Status.ResourceKey = v.Key
+		// Empty once rejected. A failed apply changes nothing: a resource that
+		// was never applied has no key yet, and a live one keeps its own.
+		resourceKey := r.Status.ResourceKey
+		switch {
+		case !v.Published():
+			resourceKey = ""
+		case publishErr == nil:
+			resourceKey = v.Key
+		}
+		if r.Status.ResourceKey != resourceKey {
+			r.Status.ResourceKey = resourceKey
 			changed = true
 		}
 		if !changed {

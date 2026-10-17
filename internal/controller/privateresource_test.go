@@ -161,7 +161,7 @@ func TestReconcileRejectsOnlyTheInvalidPrivateResource(t *testing.T) {
 func TestReconcileChecksMachinesUnlessTheyCannotBeListed(t *testing.T) {
 	h := newHarness(t)
 	pr := h.newHostResource("tekton")
-	pr.Spec.Machines = []string{"test-machine", "fine-mastigoproctus-giganteus"}
+	pr.Spec.Machines = []string{"fine-mastigoproctus-giganteus"}
 	h.create(t, pr)
 
 	h.mustReconcile(t)
@@ -171,20 +171,35 @@ func TestReconcileChecksMachinesUnlessTheyCannotBeListed(t *testing.T) {
 		t.Errorf("message = %q, want it to name the machine", c.Message)
 	}
 
+	// A list that resolves in part is published, with the unknown name noted.
+	got.Spec.Machines = []string{"test-machine", "fine-mastigoproctus-giganteus"}
+	if err := h.client.Update(h.ctx, &got); err != nil {
+		t.Fatalf("updating PrivateResource: %v", err)
+	}
+	h.mustReconcile(t)
+	if _, ok := h.fake.PrivateResources()["gw-pr-demo-tekton"]; !ok {
+		t.Error("not published although one machine resolves")
+	}
+	c = wantCondition(t, h.resource(t, "tekton"), v1alpha1.ConditionAccepted,
+		metav1.ConditionTrue, gateway.ReasonAccepted)
+	if !strings.Contains(c.Message, `"fine-mastigoproctus-giganteus" do not exist`) {
+		t.Errorf("message = %q, want it to note the unknown machine", c.Message)
+	}
+
 	// A key without listClients degrades to Pangolin's own resolution.
 	h.fake.FailMachines(http.StatusForbidden)
 	h.mustReconcile(t)
-	if _, ok := h.fake.PrivateResources()["gw-pr-demo-tekton"]; !ok {
-		t.Error("not published once the machine listing was unavailable")
-	}
-	wantCondition(t, h.resource(t, "tekton"), v1alpha1.ConditionAccepted,
+	c = wantCondition(t, h.resource(t, "tekton"), v1alpha1.ConditionAccepted,
 		metav1.ConditionTrue, gateway.ReasonAccepted)
+	if strings.Contains(c.Message, "do not exist") {
+		t.Errorf("message = %q, want no note without a listing to check against", c.Message)
+	}
 }
 
 func TestReconcileRejectsAPrivateResourceWithAnUnknownUser(t *testing.T) {
 	h := newHarness(t)
 	pr := h.newHTTPResource("mcp", "mcp.example.com")
-	pr.Spec.Users = []string{"test-user@example.com", "ghost"}
+	pr.Spec.Users = []string{"ghost"}
 	h.create(t, pr)
 
 	h.mustReconcile(t)
@@ -206,6 +221,9 @@ func TestReconcileReportsAPublishFailureOnThePrivateResource(t *testing.T) {
 	pr := h.resource(t, "tekton")
 	wantCondition(t, pr, v1alpha1.ConditionAccepted, metav1.ConditionTrue, gateway.ReasonAccepted)
 	wantCondition(t, pr, v1alpha1.ConditionProgrammed, metav1.ConditionFalse, gateway.ReasonPublishFailed)
+	if pr.Status.ResourceKey != "" {
+		t.Errorf("resourceKey = %q, want none before the first successful apply", pr.Status.ResourceKey)
+	}
 }
 
 func TestReconcileMarksAPrivateResourceAsDryRun(t *testing.T) {
