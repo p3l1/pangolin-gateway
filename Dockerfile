@@ -8,6 +8,7 @@ ARG COMMIT=unknown
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
+COPY api/ api/
 COPY cmd/ cmd/
 COPY internal/ internal/
 # Cross-compiling from the build platform avoids QEMU for the compile step.
