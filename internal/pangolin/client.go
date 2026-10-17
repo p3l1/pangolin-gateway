@@ -23,6 +23,8 @@ type Client interface {
 	ListPublicResources(ctx context.Context) ([]Resource, error)
 	ListPrivateResources(ctx context.Context) ([]Resource, error)
 	ListSites(ctx context.Context) ([]Site, error)
+	ListMachines(ctx context.Context) ([]Machine, error)
+	ListUsers(ctx context.Context) ([]User, error)
 	DeletePublicResource(ctx context.Context, id int) error
 	DeletePrivateResource(ctx context.Context, id int) error
 }
@@ -33,6 +35,8 @@ const (
 	actionApplyBlueprint = "applyBlueprint"
 	actionListResources  = "listResources"
 	actionListSites      = "listSites"
+	actionListClients    = "listClients"
+	actionListUsers      = "listUsers"
 	actionDeleteResource = "deleteResource"
 
 	// Private resources live in their own table behind their own routes, so
@@ -173,6 +177,22 @@ type privateListData struct {
 		PageSize int `json:"pageSize"`
 		Page     int `json:"page"`
 	} `json:"pagination"`
+}
+
+type pagination struct {
+	Total    int `json:"total"`
+	PageSize int `json:"pageSize"`
+	Page     int `json:"page"`
+}
+
+type machinesData struct {
+	Clients    []Machine  `json:"clients"`
+	Pagination pagination `json:"pagination"`
+}
+
+type usersData struct {
+	Users      []User     `json:"users"`
+	Pagination pagination `json:"pagination"`
 }
 
 func (c *HTTPClient) do(ctx context.Context, method, path, action string, body any) ([]byte, error) {
@@ -320,6 +340,59 @@ func (c *HTTPClient) ListPrivateResources(ctx context.Context) ([]Resource, erro
 			all = append(all, Resource{ResourceID: row.SiteResourceID, NiceID: row.NiceID})
 		}
 		if len(env.Data.SiteResources) == 0 || len(all) >= env.Data.Pagination.Total {
+			return all, nil
+		}
+	}
+}
+
+// ListMachines reports the organisation's machine clients in every state. A
+// blueprint resolves machines by niceId regardless of state, so the listing
+// asks for blocked and archived clients too, which it omits by default.
+func (c *HTTPClient) ListMachines(ctx context.Context) ([]Machine, error) {
+	return listPages(ctx, c, "machine clients", "clients", "&status=active,blocked,archived",
+		actionListClients, func(d machinesData) ([]Machine, pagination) {
+			return d.Clients, d.Pagination
+		})
+}
+
+// ListUsers reports the organisation's users, which a grant names by username
+// or by e-mail address.
+func (c *HTTPClient) ListUsers(ctx context.Context) ([]User, error) {
+	return listPages(ctx, c, "users", "users", "", actionListUsers,
+		func(d usersData) ([]User, pagination) { return d.Users, d.Pagination })
+}
+
+// listPages walks a paginated listing under /org/{orgId}/{resource}. It fails
+// rather than spins on an instance that ignores the page parameter.
+func listPages[D, T any](
+	ctx context.Context,
+	c *HTTPClient,
+	what, resource, extraQuery, action string,
+	rows func(D) ([]T, pagination),
+) ([]T, error) {
+	var all []T
+
+	for page := 1; ; page++ {
+		path := fmt.Sprintf("/org/%s/%s?page=%d&pageSize=%d%s",
+			url.PathEscape(c.orgID), resource, page, listPageSize, extraQuery)
+
+		raw, err := c.do(ctx, http.MethodGet, path, action, nil)
+		if err != nil {
+			return nil, fmt.Errorf("listing %s (page %d): %w", what, page, err)
+		}
+
+		var env envelope[D]
+		if err := json.Unmarshal(raw, &env); err != nil {
+			return nil, fmt.Errorf("decoding %s (page %d): %w", what, page, err)
+		}
+		items, p := rows(env.Data)
+		if p.Page != 0 && p.Page != page {
+			return nil, fmt.Errorf("listing %s stalled: asked for page %d, got page %d",
+				what, page, p.Page)
+		}
+
+		all = append(all, items...)
+		if len(items) == 0 || len(all) >= p.Total {
 			return all, nil
 		}
 	}

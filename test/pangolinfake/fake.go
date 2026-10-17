@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +29,8 @@ type Fake struct {
 	nextID    int
 	deleted   []int
 	sites     []string
+	machines  []string
+	users     []pangolin.User
 
 	// Private resources live in their own table behind their own routes, with
 	// their own id sequence: Pangolin's siteResourceId is not a resourceId.
@@ -40,6 +43,8 @@ type Fake struct {
 	failList          int
 	failPrivateList   int
 	failSites         int
+	failMachines      int
+	failUsers         int
 	failDelete        int
 	failPrivateDelete int
 }
@@ -54,7 +59,9 @@ func New() *Fake {
 		nextPrivateID:    1,
 		// A real organisation always has at least one site; tests that care name
 		// their own via AddSite.
-		sites: []string{"test-site", "default-site"},
+		sites:    []string{"test-site", "default-site"},
+		machines: []string{"test-machine"},
+		users:    []pangolin.User{{Username: "test-user", Email: "test-user@example.com"}},
 	}
 }
 
@@ -75,6 +82,23 @@ func (f *Fake) FailPrivateDelete(status int) {
 	f.mu.Lock()
 	f.failPrivateDelete = status
 	f.mu.Unlock()
+}
+
+func (f *Fake) FailMachines(status int) { f.mu.Lock(); f.failMachines = status; f.mu.Unlock() }
+func (f *Fake) FailUsers(status int)    { f.mu.Lock(); f.failUsers = status; f.mu.Unlock() }
+
+// AddMachine makes a machine client niceId resolvable.
+func (f *Fake) AddMachine(niceID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.machines = append(f.machines, niceID)
+}
+
+// AddUser adds an organisation member a grant can name by username or e-mail.
+func (f *Fake) AddUser(username, email string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.users = append(f.users, pangolin.User{Username: username, Email: email})
 }
 
 // AddSite makes a site niceId resolvable, as creating one in Pangolin would.
@@ -183,6 +207,8 @@ func (f *Fake) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/org/{orgId}/public-resources", f.handleList)
 	mux.HandleFunc("GET /v1/org/{orgId}/private-resources", f.handlePrivateList)
 	mux.HandleFunc("GET /v1/org/{orgId}/sites", f.handleSites)
+	mux.HandleFunc("GET /v1/org/{orgId}/clients", f.handleMachines)
+	mux.HandleFunc("GET /v1/org/{orgId}/users", f.handleUsers)
 	mux.HandleFunc("DELETE /v1/public-resource/{id}", f.handleDelete)
 	mux.HandleFunc("DELETE /v1/private-resource/{id}", f.handlePrivateDelete)
 
@@ -270,6 +296,10 @@ func (f *Fake) handleApply(w http.ResponseWriter, r *http.Request) {
 					"mode 'native', or mode is 'inference' (resource %s)", key))
 			return
 		}
+		if msg := checkPrivateSchema(res); msg != "" {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("%s (resource %s)", msg, key))
+			return
+		}
 	}
 
 	// full-domain is unique per section: Pangolin checks proxy-resources and
@@ -327,6 +357,29 @@ func (f *Fake) handleApply(w http.ResponseWriter, r *http.Request) {
 						key, site))
 				return
 			}
+		}
+	}
+
+	// Both throw inside the transaction. An alias belongs to one site resource
+	// in the organisation, and a grant list resolving to no row at all ends in
+	// an insert of nothing, which the database layer refuses.
+	for _, key := range sortedKeys(bp.PrivateResources) {
+		res := bp.PrivateResources[key]
+		if res.Alias != "" {
+			if other := f.aliasOwner(res.Alias, key, bp.PrivateResources); other != "" {
+				writeError(w, http.StatusBadRequest,
+					fmt.Sprintf("Alias %s already in use by another site resource in org (%s)",
+						res.Alias, other))
+				return
+			}
+		}
+		if len(res.Machines) > 0 && !f.anyMachine(res.Machines) {
+			writeError(w, http.StatusBadRequest, "values() must be called with at least one value")
+			return
+		}
+		if len(res.Users) > 0 && !f.anyUser(res.Users) {
+			writeError(w, http.StatusBadRequest, "values() must be called with at least one value")
+			return
 		}
 	}
 
@@ -466,6 +519,90 @@ func (f *Fake) handleSites(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (f *Fake) handleMachines(w http.ResponseWriter, r *http.Request) {
+	if !f.authorised(w, r) {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if status := f.failMachines; status != 0 {
+		writeError(w, status, "clients listing failed on request")
+		return
+	}
+	rows := make([]pangolin.Machine, 0, len(f.machines))
+	for _, n := range f.machines {
+		rows = append(rows, pangolin.Machine{NiceID: n, Name: n})
+	}
+	writeOK(w, http.StatusOK, "Clients retrieved successfully", map[string]any{
+		"clients": rows,
+		"pagination": map[string]int{
+			"total": len(rows), "pageSize": len(rows) + 1, "page": 1,
+		},
+	})
+}
+
+func (f *Fake) handleUsers(w http.ResponseWriter, r *http.Request) {
+	if !f.authorised(w, r) {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if status := f.failUsers; status != 0 {
+		writeError(w, status, "users listing failed on request")
+		return
+	}
+	writeOK(w, http.StatusOK, "Users retrieved successfully", map[string]any{
+		"users": f.users,
+		"pagination": map[string]int{
+			"total": len(f.users), "pageSize": len(f.users) + 1, "page": 1,
+		},
+	})
+}
+
+// aliasOwner returns another resource holding alias, in the stored set or in
+// the document being applied. It assumes the lock is held.
+func (f *Fake) aliasOwner(alias, key string, doc map[string]pangolin.PrivateResource) string {
+	for _, other := range sortedKeys(doc) {
+		if other != key && doc[other].Alias == alias {
+			return other
+		}
+	}
+	for _, other := range sortedKeys(f.privateResources) {
+		if _, inDoc := doc[other]; inDoc || other == key {
+			continue
+		}
+		if f.privateResources[other].Alias == alias {
+			return other
+		}
+	}
+	return ""
+}
+
+// anyMachine and anyUser assume the lock is held.
+func (f *Fake) anyMachine(names []string) bool {
+	for _, n := range names {
+		for _, m := range f.machines {
+			if n == m {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (f *Fake) anyUser(names []string) bool {
+	for _, n := range names {
+		for _, u := range f.users {
+			if n == u.Username || n == u.Email {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // knownSite assumes the lock is held.
 func (f *Fake) knownSite(niceID string) bool {
 	for _, s := range f.sites {
@@ -551,9 +688,13 @@ func (f *Fake) handleControlFail(w http.ResponseWriter, r *http.Request) {
 		f.FailPrivateList(status)
 	case "private-delete":
 		f.FailPrivateDelete(status)
+	case "machines":
+		f.FailMachines(status)
+	case "users":
+		f.FailUsers(status)
 	default:
 		writeError(w, http.StatusBadRequest,
-			"on must be apply, list, delete, private-list or private-delete")
+			"on must be apply, list, delete, private-list, private-delete, machines or users")
 		return
 	}
 	writeOK(w, http.StatusOK, "ok", nil)
@@ -723,6 +864,74 @@ func isPathChar(c byte) bool {
 	default:
 		return strings.ContainsRune("-._~!$&'()*+,;#=@:", rune(c))
 	}
+}
+
+// Pangolin's own patterns for a host destination and for an alias.
+var (
+	hostnamePattern = regexp.MustCompile(
+		`^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
+	aliasPattern = regexp.MustCompile(
+		`^(?:[a-zA-Z0-9*?](?:[a-zA-Z0-9*?-]{0,61}[a-zA-Z0-9*?])?\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
+)
+
+// checkPrivateSchema mirrors the refinements PrivateResourceSchema runs, any
+// of which rejects the whole document. It returns "" when the entry passes.
+func checkPrivateSchema(res pangolin.PrivateResource) string {
+	switch res.Mode {
+	case pangolin.ModeHTTP, pangolin.ModeHost, pangolin.ModeCIDR, "ssh", "inference":
+	default:
+		return fmt.Sprintf("Invalid option: expected one of host|cidr|http|ssh|inference, got %q", res.Mode)
+	}
+	for _, role := range res.Roles {
+		if role == "Admin" {
+			return "Admin role cannot be included in roles"
+		}
+	}
+	if res.Alias != "" && !aliasPattern.MatchString(res.Alias) {
+		return "Alias must be a fully qualified domain name with optional wildcards"
+	}
+	for _, ports := range []*string{res.TCPPorts, res.UDPPorts} {
+		if ports != nil && !validPortRanges(*ports) {
+			return "Invalid port range string: " + *ports
+		}
+	}
+	switch res.Mode {
+	case pangolin.ModeHost:
+		isIP := net.ParseIP(res.Destination) != nil
+		validDomain := hostnamePattern.MatchString(res.Destination) &&
+			res.Alias != "" && hostnamePattern.MatchString(res.Alias)
+		if !isIP && !validDomain {
+			return "Destination must be a valid IP address or valid domain AND alias is required"
+		}
+	case pangolin.ModeCIDR:
+		if _, _, err := net.ParseCIDR(res.Destination); err != nil {
+			return "Destination must be a valid CIDR notation for cidr mode"
+		}
+	}
+	return ""
+}
+
+// validPortRanges mirrors portRangeStringSchema.
+func validPortRanges(raw string) bool {
+	if s := strings.TrimSpace(raw); s == "" || s == "*" {
+		return true
+	}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return false
+		}
+		lo, hi, isRange := strings.Cut(part, "-")
+		if !isRange {
+			hi = lo
+		}
+		start, err1 := strconv.Atoi(strings.TrimSpace(lo))
+		end, err2 := strconv.Atoi(strings.TrimSpace(hi))
+		if err1 != nil || err2 != nil || start < 1 || end > 65535 || start > end {
+			return false
+		}
+	}
+	return true
 }
 
 // sortedKeys keeps the fake's complaint about a document with several problems

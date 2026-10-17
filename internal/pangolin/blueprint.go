@@ -9,6 +9,10 @@ import "encoding/json"
 // same values; this client only ever sends "mode".
 const (
 	ModeHTTP = "http"
+
+	// Private resources only: one address, or a whole network.
+	ModeHost = "host"
+	ModeCIDR = "cidr"
 )
 
 // Healthcheck strategies. Pangolin takes any string here and its agent falls
@@ -28,7 +32,8 @@ const (
 // Schemes a private resource uses to reach its destination. Its public
 // counterpart is a target's method.
 const (
-	SchemeHTTP = "http"
+	SchemeHTTP  = "http"
+	SchemeHTTPS = "https"
 )
 
 // Rule actions. Pangolin evaluates rules before any authentication: "allow"
@@ -161,8 +166,7 @@ type Healthcheck struct {
 }
 
 // PrivateResource is one entry under private-resources, keyed by its niceId.
-// Only mode http is modelled: the other modes describe a destination with port
-// ranges and no Kubernetes workload behind it, which an HTTPRoute cannot say.
+// Which keys apply depends on the mode. Rationale: docs/private-resources.md.
 type PrivateResource struct {
 	Name string `json:"name"`
 	Mode string `json:"mode"`
@@ -174,12 +178,20 @@ type PrivateResource struct {
 	DestinationPort int32  `json:"destination-port,omitempty"`
 	FullDomain      string `json:"full-domain,omitempty"`
 	Scheme          string `json:"scheme,omitempty"`
+	SSL             *bool  `json:"ssl,omitempty"`
+	Alias           string `json:"alias,omitempty"`
 
-	// Pangolin forces tcp-ports, udp-ports, disable-icmp and ssl for mode http,
-	// so sending them would only restate what it decides anyway.
+	// Nil for mode http, where Pangolin forces them. Set for host and cidr even
+	// when empty: an absent key defaults to "*", every port, while "" is none.
+	TCPPorts    *string `json:"tcp-ports,omitempty"`
+	UDPPorts    *string `json:"udp-ports,omitempty"`
+	DisableICMP *bool   `json:"disable-icmp,omitempty"`
 
-	Roles []string `json:"roles,omitempty"`
-	Users []string `json:"users,omitempty"`
+	// Pangolin replaces every grant on each apply, so an omitted list and an
+	// empty one both leave only the organisation's admin role.
+	Roles    []string `json:"roles,omitempty"`
+	Users    []string `json:"users,omitempty"`
+	Machines []string `json:"machines,omitempty"`
 }
 
 // Site is one row of the sites listing. Only the niceId matters here: it is what
@@ -187,6 +199,20 @@ type PrivateResource struct {
 type Site struct {
 	NiceID string `json:"niceId"`
 	Name   string `json:"name"`
+}
+
+// Machine is one row of the machine clients listing. A private resource grants
+// access to one by its niceId, and Pangolin silently drops a name it cannot find.
+type Machine struct {
+	NiceID string `json:"niceId"`
+	Name   string `json:"name"`
+}
+
+// User is one row of the organisation's users listing. A grant names a user by
+// username or by e-mail, and Pangolin matches either.
+type User struct {
+	Username string `json:"username"`
+	Email    string `json:"email"`
 }
 
 // Resource is one row of the public-resources listing. Only the two fields the
