@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/p3l1/pangolin-gateway/compare/v0.7.0...v0.7.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **build:** copy api/ into the release image build ([#36](https://github.com/p3l1/pangolin-gateway/issues/36)) ([ea354a5](https://github.com/p3l1/pangolin-gateway/commit/ea354a591ef273fad22d52ad2808032a133f7449))
+
 ## [0.7.0](https://github.com/p3l1/pangolin-gateway/compare/v0.6.0...v0.7.0) (2026-10-17)
 
 
