@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/p3l1/pangolin-gateway/compare/v0.6.0...v0.7.0) (2026-10-17)
+
+
+### Features
+
+* manage Pangolin private resources through a PrivateResource CRD ([#34](https://github.com/p3l1/pangolin-gateway/issues/34)) ([e6756b6](https://github.com/p3l1/pangolin-gateway/commit/e6756b622c5e7ffc1534dcb462eb696a58255938))
+
 ## [0.6.0](https://github.com/p3l1/pangolin-gateway/compare/v0.5.0...v0.6.0) (2026-10-05)
 
 
