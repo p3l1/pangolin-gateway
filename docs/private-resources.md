@@ -26,21 +26,72 @@ in each section. `internal/pangolin/client.go` normalises `siteResourceId` into
 the same row type the public listing yields, which keeps the quirk in one place
 and lets the prune treat both sections alike.
 
-## Only mode http maps to an HTTPRoute
+## Two sources: HTTPRoutes and the PrivateResource CRD
 
-`PrivateResourceSchema` takes `host`, `cidr`, `http`, `ssh` and `inference`.
-Only `http` has a counterpart in the Gateway API:
+`PrivateResourceSchema` takes `host`, `cidr`, `http`, `ssh` and `inference`
+(1.24.0 adds `gateway`, alias `exit-node`). Only `http` has a counterpart in the
+Gateway API:
 
-- `host` and `cidr` describe a destination reachable *from the site* — an IP or
-  a CIDR block, with TCP and UDP port ranges and an alias — and no Kubernetes
-  workload behind it. There is no Gateway API object that says this honestly.
-  `TCPRoute` does not: it names a listener port onto a Service, which is
-  Pangolin's *public* tcp mode, and it lives in the experimental channel whose
-  CRDs are not installed by default.
+- `host` and `cidr` describe a destination reachable *from the site* — an IP, a
+  hostname or a CIDR block, with TCP and UDP port ranges and an alias — and often
+  no Kubernetes workload behind it at all. There is no Gateway API object that
+  says this honestly. `TCPRoute` does not: it names a listener port onto a
+  Service, which is Pangolin's *public* tcp mode, and it lives in the
+  experimental channel whose CRDs are not installed by default.
 - `ssh` and `inference` are further from HTTP still.
 
 So a route annotated `pangolin.p3l1.de/visibility: private` becomes a `mode:
-http` private resource, and the rest is out of scope rather than approximated.
+http` private resource, and `host`, `cidr` and `http` are also available through
+the `PrivateResource` kind in `pangolin.p3l1.de/v1alpha1`, whose fields map
+one-to-one onto the blueprint keys. `ssh`, `inference` and `gateway` remain out
+of scope, as do `labels`, `enabled`, `auth-daemon` and the AI keys.
+
+Both sources share one blueprint apply, one prune and one collision check. A
+PrivateResource is keyed `gw-pr-<namespace>-<name>`, so a route and a resource
+of the same name do not compete for a key; the `gw-` prefix keeps both inside
+what the prune may delete.
+
+## The keys a PrivateResource sends, verified at 1.22.0
+
+| CRD field | Blueprint key | Modes | Notes |
+|---|---|---|---|
+| `displayName` | `name` | all | Defaults to `<namespace>/<name>` |
+| `mode` | `mode` | all | `protocol` is not involved here |
+| `sites` | `sites` | all | Defaults to `--default-site` |
+| `destination` | `destination` | all | IP or hostname; a CIDR block for `cidr` |
+| `tcpPorts`, `udpPorts` | `tcp-ports`, `udp-ports` | host, cidr | Always sent, see below |
+| `disableIcmp` | `disable-icmp` | host, cidr | Always sent |
+| `alias` | `alias` | host | Required when `destination` is a hostname |
+| `fullDomain` | `full-domain` | http | Required |
+| `ssl` | `ssl` | http | Defaults to true, always sent |
+| `scheme` | `scheme` | http | `http` or `https`, defaults to `http` |
+| `destinationPort` | `destination-port` | http | Required |
+| `roles`, `users`, `machines` | same | all | See *Grants* below |
+
+**Ports default to all, not none.** The schema defaults an absent `tcp-ports`
+and `udp-ports` to `"*"`, and `parsePortRangeString` (`server/lib/ip.ts`) turns
+`"*"` into "every port" and `""` into a single dummy range on port 0 — nothing.
+The CRD reads the other way round, closed unless named, so the renderer sends
+both keys on every host and cidr resource, empty when the spec says nothing. A
+blueprint migrated verbatim that only names `tcp-ports` therefore loses the
+`udp-ports: "*"` it had by default; name `udpPorts: "*"` to keep it.
+
+**`mode: http` ignores the port keys.** The applier forces `tcp-ports` to
+`443,80`, `udp-ports` to empty and `disable-icmp` to true, and defaults `ssl` to
+true. The renderer refuses those fields on an http resource rather than sending
+values that would be overwritten.
+
+**An alias must be unique in the organisation.** Both the create and the update
+path query `siteResources.alias` and throw `Alias … already in use` inside the
+transaction, failing the whole document. The renderer resolves alias collisions
+the same way as hostnames — oldest wins — and counts aliases, full-domains and
+route hostnames as one namespace, compared case-insensitively.
+
+**The schema's refinements are mirrored**, because each fails the whole
+document: a host destination must be an IP or a hostname, and a hostname needs
+an alias; a cidr destination must parse as a CIDR block; an alias must be a
+fully qualified name (wildcards `*` and `?` allowed); port lists must be `"*"`,
+empty, or ports and ranges between 1 and 65535.
 
 ## What a private resource does not have
 
@@ -49,22 +100,53 @@ and `machines`; `sso`, healthcheck and access-rule annotations have nothing to
 map onto, so the renderer refuses a private route that carries one rather than
 dropping it silently.
 
-Pangolin keeps the organisation's admin role attached to every private resource
-and replaces the rest on each apply, so a resource published without `roles` or
-`users` is reachable by org admins alone. That is a safe default, not an error.
+## Grants on a private resource are always authoritative
 
-**A role named in the annotation is created if it does not exist**
-(`server/lib/blueprints/privateResources.ts`), so a typo does not fail the apply
-— it quietly creates an empty role that grants nobody anything. This is the
-opposite of the site check, where an unknown name fails the whole document.
+Verified in `server/lib/blueprints/privateResources.ts` at 1.22.0 and 1.24.0.
+The schema defaults `roles`, `users` and `machines` to `[]`, so after parsing an
+omitted list and an empty one are the same thing. The update path then deletes
+every row in `clientSiteResources`, `userSiteResources` and — except the admin
+role's — `roleSiteResources`, and inserts the lists back. **Every apply replaces
+all grants**, and a resource published without any is reachable by org admins
+alone. That is a safe default, not an error, but it means a grant made in the
+dashboard lasts only until the next pass. This differs from a public resource,
+where omitting `sso-roles`/`sso-users` leaves the dashboard alone (see below).
+
+How each list is resolved:
+
+- **`roles`** by name. **A role that does not exist is created**, with the
+  default role actions, so a typo does not fail the apply — it quietly creates
+  an empty role that grants nobody anything. This is the opposite of the site
+  check. `Admin` is refused by the schema and fails the whole document; the
+  admin role keeps access regardless.
+- **`users`** by username *or* e-mail address
+  (`or(inArray(users.username, …), inArray(users.email, …))`), restricted to the
+  organisation's members. One identifier can therefore match two accounts that
+  share it — say an internal user and an IdP user with the same address.
+- **`machines`** — this spelling, plural — by client `niceId`
+  (`inArray(clients.niceId, …)`), in any state and including user devices.
+
+A name that resolves to nothing is dropped silently. A list *none* of whose
+names resolve is worse: the code inserts an empty array, which the database
+layer refuses with `values() must be called with at least one value`, and the
+whole document fails. That holds for `machines` at 1.24.0 still, and for `users`
+at 1.22.0 (1.24.0 guards it; 1.23 was not checked).
+
+The controller therefore checks both before the apply, like sites: it lists
+`GET /org/{orgId}/clients?status=active,blocked,archived` (action `listClients`)
+and `GET /org/{orgId}/users` (action `listUsers`), only while some object names
+a machine or a user, and rejects the object naming one it cannot find — stricter
+than Pangolin, which would drop it. The clients listing returns machine clients
+only, so a user device's niceId is rejected; grant the user instead. When either
+listing fails, its check is skipped with a logged error and Pangolin is the
+authority again.
 
 ## Fields Pangolin decides for itself
 
 For `mode: http` the applier forces `tcp-ports` to `443,80`, `udp-ports` to
-empty, `disable-icmp` to true, and defaults `ssl` to true. Sending them would
-only restate what Pangolin does anyway, so the blueprint carries `name`, `mode`,
-`sites`, `destination`, `destination-port`, `full-domain`, `scheme` and the
-grants.
+empty, `disable-icmp` to true, and defaults `ssl` to true. A private route
+therefore carries `name`, `mode`, `sites`, `destination`, `destination-port`,
+`full-domain`, `scheme` and the grants; a PrivateResource adds an explicit `ssl`.
 
 `sites` is the plural key. The singular `site` still works and is marked
 deprecated in the schema.
@@ -94,8 +176,9 @@ for HTTP public resources
 ([docs](https://docs.pangolin.net/manage/blueprints)). The controller therefore reads
 one pair of annotations and writes it to whichever place the chosen visibility uses.
 
-Both keys are omitted when the route annotates neither, which leaves whatever the
-dashboard granted untouched. Verified in `server/lib/blueprints/publicResources.ts`
+On a **public** resource both keys are omitted when the route annotates neither,
+which leaves whatever the dashboard granted untouched. (On a private one omission
+revokes, as described above.) Verified in `server/lib/blueprints/publicResources.ts`
 at `1.24.0`: every path guards on the key being present — `if (resourceData.auth?.["sso-roles"])`
 on create, `!== undefined` on update — and skips it otherwise.
 
