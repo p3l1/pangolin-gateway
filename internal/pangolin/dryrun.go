@@ -56,6 +56,14 @@ func (d *DryRun) ListSites(ctx context.Context) ([]Site, error) {
 	return d.Inner.ListSites(ctx)
 }
 
+func (d *DryRun) ListMachines(ctx context.Context) ([]Machine, error) {
+	return d.Inner.ListMachines(ctx)
+}
+
+func (d *DryRun) ListUsers(ctx context.Context) ([]User, error) {
+	return d.Inner.ListUsers(ctx)
+}
+
 func (d *DryRun) DeletePublicResource(_ context.Context, id int) error {
 	d.Log.Info("dry run: would delete public resource", "resourceId", id)
 	return nil

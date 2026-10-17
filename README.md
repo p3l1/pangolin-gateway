@@ -1,7 +1,8 @@
 # pangolin-gateway
 
 A Kubernetes controller that publishes Gateway API `HTTPRoute`s as
-[Pangolin](https://github.com/fosrl/pangolin) resources.
+[Pangolin](https://github.com/fosrl/pangolin) resources, and Pangolin private resources
+of every mode it supports through its own `PrivateResource` kind.
 
 Status: early development. Not released.
 
@@ -23,8 +24,9 @@ the ones no route claims any more.
 
 Each pass renders the whole desired state from the informer cache and sends it in a single
 blueprint apply, then deletes the resources it owns that no longer have a route. Resources
-are keyed `gw-<namespace>-<name>`, and the prune touches nothing without that `gw-` prefix —
-so a hand-written blueprint can maintain other resources in the same organisation untouched.
+are keyed `gw-<namespace>-<name>` for a route and `gw-pr-<namespace>-<name>` for a
+`PrivateResource`, and the prune touches nothing without the `gw-` prefix — so a hand-written
+blueprint can maintain other resources in the same organisation untouched.
 
 There is no finalizer. A deleted route is simply absent from the next render, which is what
 removes it; a finalizer would block namespace deletion whenever the controller is down.
@@ -33,7 +35,8 @@ removes it; a finalizer would block namespace deletion whenever the controller i
 
 - Pangolin v1.22.0 or newer, with the Integration API reachable from the cluster
 - An Integration API key of the form `<key_id>.<key_secret>`
-- The Gateway API CRDs installed in the cluster
+- The Gateway API CRDs installed in the cluster. The chart installs the controller's own
+  `PrivateResource` CRD.
 
 **The API key needs three actions**: `applyBlueprint`, `listResources` and `deleteResource`.
 A key missing one returns 401 or 403 for that operation alone, which looks exactly like a bad
@@ -49,6 +52,10 @@ one target names a site that does not exist, so a single mistyped `pangolin.p3l1
 annotation would unpublish every route. With `listSites` the controller checks site names
 first and rejects only the offending route. Without it the check is skipped and the controller
 keeps working, but that failure mode returns.
+
+`listClients` and `listUsers` are recommended for the same reason as soon as a
+`PrivateResource` grants access to machines or users: a grant list none of whose names exist
+also fails the whole apply. They are only called while something names a machine or a user.
 
 ## Installing
 
@@ -70,6 +77,12 @@ helm install pangolin-gateway oci://ghcr.io/p3l1/charts/pangolin-gateway \
 `pangolin.endpoint` is the Integration API base URL **including its version path**. Pangolin
 Cloud serves `/v1`, self-hosted deployments usually `/api/v1`. Pointing it at the internal
 API instead — the one on port 3000 — makes every call fail with an opaque 401.
+
+The chart installs the `PrivateResource` CRD as an ordinary template, so `helm upgrade`
+updates it too. It is annotated `helm.sh/resource-policy: keep`: uninstalling the release
+leaves it, and with it every `PrivateResource`, in place. `crds.keep=false` drops the
+annotation; `crds.install=false` leaves installing the CRD to you — the controller does not
+start without it.
 
 Start with `--set pangolin.dryRun=true`. In that mode every write is logged and none is
 performed, which is the safe way to see what a first real pass would do.
@@ -357,12 +370,75 @@ is rejected rather than published without it. `roles` and `users` on a public ro
 likewise rejected: quietly ignoring them would leave the author believing access is
 restricted.
 
-Only `mode: http` is covered. Pangolin's `host` and `cidr` modes describe a destination with
-port ranges and no Kubernetes workload behind it — typically something outside the cluster,
-reachable from the site. No Gateway API object says that honestly, so those modes are out of
-scope rather than approximated.
+A route only ever becomes a `mode: http` private resource. Pangolin's `host` and `cidr`
+modes describe a destination with port ranges and often no Kubernetes workload behind it — no
+Gateway API object says that honestly — so they come through the `PrivateResource` kind below.
 
 Details and the evidence behind them: [docs/private-resources.md](docs/private-resources.md).
+
+## The PrivateResource kind
+
+`pangolin.p3l1.de/v1alpha1` `PrivateResource` is a namespaced object whose fields map
+one-to-one onto a blueprint's `private-resources` entry. It covers modes `host`, `cidr`
+and `http`:
+
+```yaml
+apiVersion: pangolin.p3l1.de/v1alpha1
+kind: PrivateResource
+metadata:
+  name: tekton-webhook
+  namespace: tekton-pipelines
+spec:
+  displayName: Tekton Webhook
+  mode: host
+  sites: [my-site]
+  destination: el-webhook.tekton-pipelines.svc.cluster.local
+  alias: tekton-webhook.homelab.internal
+  tcpPorts: "8080"
+  machines: [fine-mastigoproctus-giganteus]
+```
+
+| Field | Modes | Meaning |
+|---|---|---|
+| `displayName` | all | Name in the dashboard; defaults to `<namespace>/<name>` |
+| `mode` | — | `host`, `cidr` or `http`; required |
+| `sites` | all | Site niceIds; defaults to `pangolin.defaultSite` |
+| `destination` | all | IP or hostname; a CIDR block for `cidr`; required |
+| `tcpPorts`, `udpPorts` | host, cidr | `"80,443,8000-9000"`, `"*"` for all; **unset means none** |
+| `disableIcmp` | host, cidr | Block ping |
+| `alias` | host | DNS name clients use; required when `destination` is a hostname |
+| `fullDomain` | http | Hostname clients use; required |
+| `ssl` | http | Serve `fullDomain` with a certificate; default `true` |
+| `scheme`, `destinationPort` | http | How the site reaches the destination; scheme defaults to `http`, port required |
+| `roles`, `users`, `machines` | all | Who may connect, besides org admins |
+
+A field that has no meaning in the chosen mode is refused rather than ignored. Examples for
+each mode: [host](examples/privateresource-host.yaml), [cidr](examples/privateresource-cidr.yaml),
+[http](examples/privateresource-http.yaml).
+
+**Ports are closed unless named.** A hand-written blueprint opens every port for an absent
+`tcp-ports` or `udp-ports`; the controller always sends both, empty when the spec says
+nothing. Set `udpPorts: "*"` explicitly to keep a migrated blueprint's implicit UDP.
+
+**Grants replace, every time.** Pangolin deletes a private resource's role, user and machine
+grants on every apply and writes back what the document lists, keeping only the admin role.
+Omitting `roles`, `users` and `machines` therefore leaves the resource to org admins and
+revokes anything granted in the dashboard. `users` match a username or an e-mail address,
+`machines` a machine client's niceId. An unknown role is **created**, not refused; the
+`Admin` role is refused, since it has access anyway. When `listUsers`/`listClients` are
+available, a `users` or `machines` list **none** of whose names exist is rejected — Pangolin
+would fail the whole apply for it — while a name that does not exist among others is dropped by
+Pangolin and named in the `Accepted` message.
+
+Resources from both kinds share the collision check: a full-domain, an alias or a route
+hostname claimed twice goes to the oldest object, and the other is rejected with
+`DuplicateHostname`.
+
+The controller publishes every `PrivateResource` in the cluster; there is no class to opt
+in through. Unlike a route, whose backend is a Service in its own namespace, a
+`PrivateResource` names any destination the site can reach — another namespace, the node
+network, a whole CIDR block. **Creating one is therefore network access from the site**, and
+`create` on `privateresources.pangolin.p3l1.de` belongs only to those who should have that.
 
 ## Scope of v0.1
 
@@ -374,9 +450,9 @@ not — silently dropping a redirect filter would proxy the whole domain to one 
 A healthcheck is optional and off unless `pangolin.p3l1.de/healthcheck-path` is set;
 see [Healthchecks](#healthchecks).
 
-Not covered yet: TCPRoute, TLSRoute, the `host`, `cidr`, `ssh` and `inference` private
-modes, policies, multiple hostnames per route, cross-namespace backends via ReferenceGrant,
-and listener/`allowedRoutes` semantics.
+Not covered yet: TCPRoute, TLSRoute, the `ssh`, `inference` and `gateway` private modes,
+private-resource `labels`, `enabled` and `auth-daemon`, policies, multiple hostnames per
+route, cross-namespace backends via ReferenceGrant, and listener/`allowedRoutes` semantics.
 
 ## Status conditions
 
@@ -398,6 +474,21 @@ and listener/`allowedRoutes` semantics.
 
 Conditions are written per parentRef into `status.parents[]`, only on entries belonging to
 `p3l1.de/pangolin`. Routes on another controller's GatewayClass are left entirely alone.
+
+A `PrivateResource` carries `Accepted` and `Programmed` in `status.conditions`, and its
+niceId in `status.resourceKey` while it is published:
+
+| Situation | Condition |
+|---|---|
+| Published | `Accepted: True`, `Programmed: True` |
+| Publish to Pangolin failed | `Accepted: True`, `Programmed: False`, `PublishFailed` |
+| Dry run | `Accepted: True`, `Programmed: False`, `DryRun` |
+| Invalid field, port list, alias or destination | `Accepted: False`, `InvalidSpec` |
+| Site does not exist; no listed machine or user exists | `Accepted: False`, `UnknownSite` / `UnknownMachine` / `UnknownUser` |
+| Some listed machines or users do not exist | `Accepted: True`, the `Accepted` message names them |
+| Key, hostname or alias claimed by an older object | `Accepted: False`, `DuplicateResourceKey` / `DuplicateHostname` |
+
+`kubectl get privateresources` (short name `ppr`) shows both conditions.
 
 ## Known issues in the environment
 

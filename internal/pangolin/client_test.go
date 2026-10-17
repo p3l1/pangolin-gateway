@@ -350,3 +350,100 @@ func TestPrivateResourceAuthErrorsNameTheirAction(t *testing.T) {
 		})
 	}
 }
+
+// Pangolin resolves a machine by niceId whatever its state, while the listing
+// shows only active clients unless asked for the rest.
+func TestListMachinesAsksForEveryState(t *testing.T) {
+	var queries []string
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if want := "/v1/org/test-org/clients"; r.URL.Path != want {
+			t.Errorf("path = %s, want %s", r.URL.Path, want)
+		}
+		queries = append(queries, r.URL.Query().Get("status"))
+		_, _ = fmt.Fprint(w, `{"success":true,"error":false,"message":"ok","status":200,"data":{
+			"clients":[{"niceId":"ci-runner","name":"CI"},{"niceId":"edge-agent","name":"Edge"}],
+			"pagination":{"total":2,"pageSize":100,"page":1}}}`)
+	}))
+
+	got, err := c.ListMachines(context.Background())
+	if err != nil {
+		t.Fatalf("ListMachines: %v", err)
+	}
+	if len(got) != 2 || got[0].NiceID != "ci-runner" || got[1].NiceID != "edge-agent" {
+		t.Errorf("machines = %+v, want both rows", got)
+	}
+	if len(queries) != 1 || queries[0] != "active,blocked,archived" {
+		t.Errorf("status queries = %v, want [active,blocked,archived]", queries)
+	}
+}
+
+func TestListUsersFollowsPagination(t *testing.T) {
+	pages := map[string]string{
+		"1": `{"success":true,"error":false,"message":"ok","status":200,"data":{
+			"users":[{"username":"alice","email":"alice@example.com"}],
+			"pagination":{"total":2,"pageSize":1,"page":1}}}`,
+		"2": `{"success":true,"error":false,"message":"ok","status":200,"data":{
+			"users":[{"username":"bob","email":"bob@example.com"}],
+			"pagination":{"total":2,"pageSize":1,"page":2}}}`,
+	}
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if want := "/v1/org/test-org/users"; r.URL.Path != want {
+			t.Errorf("path = %s, want %s", r.URL.Path, want)
+		}
+		body, ok := pages[r.URL.Query().Get("page")]
+		if !ok {
+			t.Errorf("unexpected page %q", r.URL.Query().Get("page"))
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = fmt.Fprint(w, body)
+	}))
+
+	got, err := c.ListUsers(context.Background())
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(got) != 2 || got[1].Username != "bob" || got[1].Email != "bob@example.com" {
+		t.Errorf("users = %+v, want both pages", got)
+	}
+}
+
+func TestListUsersStopsOnAStallingPage(t *testing.T) {
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"success":true,"error":false,"message":"ok","status":200,"data":{
+			"users":[{"username":"alice"}],"pagination":{"total":99,"pageSize":1,"page":1}}}`)
+	}))
+
+	if got, err := c.ListUsers(context.Background()); err == nil {
+		t.Fatalf("want an error when the listing stalls, got %d users", len(got))
+	}
+}
+
+// Without a total there is no telling a complete listing from its first page,
+// and a short one would make later names look unknown.
+func TestListUsersRefusesRowsWithoutATotal(t *testing.T) {
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"success":true,"error":false,"message":"ok","status":200,"data":{
+			"users":[{"username":"alice"}]}}`)
+	}))
+
+	if got, err := c.ListUsers(context.Background()); err == nil {
+		t.Fatalf("want an error for a listing without a total, got %d users", len(got))
+	}
+}
+
+func TestGranteeListingAuthErrorsNameTheirAction(t *testing.T) {
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+
+	for action, call := range map[string]func() error{
+		"listClients": func() error { _, err := c.ListMachines(context.Background()); return err },
+		"listUsers":   func() error { _, err := c.ListUsers(context.Background()); return err },
+	} {
+		var authErr *AuthError
+		if err := call(); !errors.As(err, &authErr) || authErr.Action != action {
+			t.Errorf("error = %v, want an AuthError naming %s", err, action)
+		}
+	}
+}

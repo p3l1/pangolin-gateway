@@ -362,6 +362,27 @@ func TestFakeRejectsTheWholeApplyForAnInvalidPrivateResource(t *testing.T) {
 		"no name":        func(r *pangolin.PrivateResource) { r.Name = "" },
 		"no mode":        func(r *pangolin.PrivateResource) { r.Mode = "" },
 		"unknown site":   func(r *pangolin.PrivateResource) { r.Sites = []string{"nowhere"} },
+		"the Admin role": func(r *pangolin.PrivateResource) { r.Roles = []string{"Admin"} },
+		"no machine resolves": func(r *pangolin.PrivateResource) {
+			r.Machines = []string{"ghost", "phantom"}
+		},
+		"no user resolves": func(r *pangolin.PrivateResource) { r.Users = []string{"ghost"} },
+		"an unknown mode":  func(r *pangolin.PrivateResource) { r.Mode = "tcp" },
+		"host without alias": func(r *pangolin.PrivateResource) {
+			*r = hostResource("nas.lan", "")
+		},
+		"host with a bad alias": func(r *pangolin.PrivateResource) {
+			*r = hostResource("10.0.0.5", "nas")
+		},
+		"a bad port range": func(r *pangolin.PrivateResource) {
+			*r = hostResource("10.0.0.5", "")
+			bad := "9000-8000"
+			r.TCPPorts = &bad
+		},
+		"cidr without a network": func(r *pangolin.PrivateResource) {
+			*r = hostResource("10.0.0.5", "")
+			r.Mode = pangolin.ModeCIDR
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f, c := newFake(t)
@@ -417,5 +438,92 @@ func TestFakeAcceptsOneFullDomainAcrossBothSections(t *testing.T) {
 		},
 	}); err != nil {
 		t.Errorf("apply rejected: %v; Pangolin checks full-domain per section", err)
+	}
+}
+
+func hostResource(destination, alias string) pangolin.PrivateResource {
+	tcp, udp, icmp := "22", "", false
+	return pangolin.PrivateResource{
+		Name:        "infra/nas",
+		Mode:        pangolin.ModeHost,
+		Sites:       []string{"test-site"},
+		Destination: destination,
+		Alias:       alias,
+		TCPPorts:    &tcp,
+		UDPPorts:    &udp,
+		DisableICMP: &icmp,
+	}
+}
+
+// Pangolin drops a name it cannot find as long as one other resolves; only an
+// entirely unresolved list ends in the insert that fails.
+func TestFakeAcceptsGrantsOfWhichOneResolves(t *testing.T) {
+	f, c := newFake(t)
+	f.AddMachine("ci-runner")
+
+	r := hostResource("10.0.0.5", "nas.homelab.internal")
+	r.Machines = []string{"ci-runner", "ghost"}
+	r.Users = []string{"test-user@example.com", "ghost"}
+	if err := c.ApplyBlueprint(context.Background(), pangolin.Blueprint{
+		PrivateResources: map[string]pangolin.PrivateResource{"gw-pr-infra-nas": r},
+	}); err != nil {
+		t.Fatalf("apply rejected: %v", err)
+	}
+}
+
+// An alias is unique across the organisation's site resources, including ones
+// already stored that this document does not mention.
+func TestFakeRejectsAnAliasHeldByAnotherResource(t *testing.T) {
+	f, c := newFake(t)
+	f.SeedPrivate("handwritten", hostResource("10.0.0.9", "nas.homelab.internal"))
+
+	err := c.ApplyBlueprint(context.Background(), pangolin.Blueprint{
+		PrivateResources: map[string]pangolin.PrivateResource{
+			"gw-pr-infra-nas": hostResource("10.0.0.5", "nas.homelab.internal"),
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "already in use") {
+		t.Fatalf("err = %v, want the alias conflict", err)
+	}
+
+	// Re-applying the holder itself is no conflict.
+	if err := c.ApplyBlueprint(context.Background(), pangolin.Blueprint{
+		PrivateResources: map[string]pangolin.PrivateResource{
+			"handwritten": hostResource("10.0.0.9", "nas.homelab.internal"),
+		},
+	}); err != nil {
+		t.Errorf("re-applying the alias holder: %v", err)
+	}
+}
+
+func TestFakeListsMachinesAndUsers(t *testing.T) {
+	f, c := newFake(t)
+	f.AddMachine("ci-runner")
+	f.AddUser("alice", "alice@example.com")
+
+	machines, err := c.ListMachines(context.Background())
+	if err != nil {
+		t.Fatalf("ListMachines: %v", err)
+	}
+	if len(machines) != 2 || machines[1].NiceID != "ci-runner" {
+		t.Errorf("machines = %+v, want the default and ci-runner", machines)
+	}
+
+	users, err := c.ListUsers(context.Background())
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(users) != 2 || users[1].Email != "alice@example.com" {
+		t.Errorf("users = %+v, want the default and alice", users)
+	}
+
+	f.FailMachines(http.StatusForbidden)
+	f.FailUsers(http.StatusForbidden)
+	var authErr *pangolin.AuthError
+	if _, err := c.ListMachines(context.Background()); !errors.As(err, &authErr) {
+		t.Errorf("ListMachines err = %v, want an AuthError", err)
+	}
+	if _, err := c.ListUsers(context.Background()); !errors.As(err, &authErr) {
+		t.Errorf("ListUsers err = %v, want an AuthError", err)
 	}
 }

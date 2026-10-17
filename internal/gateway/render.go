@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	"github.com/p3l1/pangolin-gateway/api/v1alpha1"
 	"github.com/p3l1/pangolin-gateway/internal/pangolin"
 )
 
@@ -58,6 +59,16 @@ type Inputs struct {
 	// otherwise unpublish every route. A nil map disables the check, which is how
 	// a controller whose key lacks the listSites action keeps working.
 	KnownSites map[string]bool
+
+	// PrivateResources are rendered into private-resources beside the routes,
+	// competing with them for keys and hostnames.
+	PrivateResources []v1alpha1.PrivateResource
+
+	// KnownMachines holds machine client niceIds, KnownUsers usernames and e-mail
+	// addresses. A grant naming none of them fails the whole apply, so both are
+	// checked like KnownSites, and a nil map disables the check the same way.
+	KnownMachines map[string]bool
+	KnownUsers    map[string]bool
 }
 
 // ConditionResult is one condition's outcome, without the bookkeeping fields
@@ -106,29 +117,69 @@ type Verdict struct {
 // Published reports whether this route made it into the blueprint.
 func (v Verdict) Published() bool { return v.Key != "" }
 
-// rendered is one route's blueprint entry. Exactly one of public and private is
-// set: a route is reachable from the internet or through a Pangolin client, and
+// rendered is one blueprint entry. Exactly one of public and private is set: a
+// route is reachable from the internet or through a Pangolin client, and
 // publishing it into both sections would claim its hostname twice.
 type rendered struct {
-	key        string
-	fullDomain string
-	public     *pangolin.PublicResource
-	private    *pangolin.PrivateResource
+	key string
+
+	// Every name the entry makes resolvable: a full-domain, an alias, or none.
+	hostnames []string
+
+	// Caveats of an accepted entry, appended to its Accepted message.
+	notes []string
+
+	public  *pangolin.PublicResource
+	private *pangolin.PrivateResource
 }
 
-// candidate is a route that passed validation and is competing for its key and
-// hostname against the other candidates.
+// Kinds of object that claim blueprint entries. An HTTPRoute and a
+// PrivateResource may share a namespace and name, so a claim names both.
+const (
+	kindHTTPRoute       = "HTTPRoute"
+	kindPrivateResource = "PrivateResource"
+)
+
+type claimant struct {
+	kind string
+	name types.NamespacedName
+}
+
+func (c claimant) String() string { return c.kind + " " + c.name.String() }
+
+// candidate is an object that passed validation and is competing for its key
+// and hostnames against the other candidates.
 type candidate struct {
-	name      types.NamespacedName
+	claimant
 	createdAt metav1.Time
 	entry     rendered
-	verdict   Verdict
 }
 
-// Render turns the cluster's Gateway API objects into the blueprint Pangolin
-// should hold, plus one verdict per route this controller serves. It is pure:
-// the same inputs always produce the same blueprint, including on collisions.
+// outcome is what the collision check decided for one candidate: published
+// under key, or rejected for the reason given.
+type outcome struct {
+	key      string
+	rejected *ConditionResult
+}
+
+// Result is a complete render: the blueprint and a verdict for every object
+// this controller has an opinion about.
+type Result struct {
+	Blueprint        pangolin.Blueprint
+	Routes           map[types.NamespacedName]Verdict
+	PrivateResources map[types.NamespacedName]ResourceVerdict
+}
+
+// Render turns the cluster's objects into the blueprint Pangolin should hold,
+// plus one verdict per route this controller serves.
 func Render(in Inputs) (pangolin.Blueprint, map[types.NamespacedName]Verdict) {
+	r := RenderAll(in)
+	return r.Blueprint, r.Routes
+}
+
+// RenderAll is Render including the PrivateResource verdicts. It is pure: the
+// same inputs always produce the same result, including on collisions.
+func RenderAll(in Inputs) Result {
 	classes := servedClasses(in.GatewayClasses, in.ControllerName)
 	gateways := gatewaysByName(in.Gateways)
 
@@ -172,12 +223,32 @@ func Render(in Inputs) (pangolin.Blueprint, map[types.NamespacedName]Verdict) {
 			continue
 		}
 
-		base.Accepted, base.ResolvedRefs = accepted(), resolved()
+		base.Accepted, base.ResolvedRefs = withNotes(accepted(), entry.notes), resolved()
+		verdicts[nameOf(r)] = base
 		candidates = append(candidates, candidate{
-			name:      nameOf(r),
+			claimant:  claimant{kind: kindHTTPRoute, name: nameOf(r)},
 			createdAt: r.CreationTimestamp,
 			entry:     entry,
-			verdict:   base,
+		})
+	}
+
+	resources := make(map[types.NamespacedName]ResourceVerdict, len(in.PrivateResources))
+	for _, pr := range in.PrivateResources {
+		name := types.NamespacedName{Namespace: pr.Namespace, Name: pr.Name}
+		v := ResourceVerdict{Generation: pr.Generation, Accepted: resourceAccepted()}
+
+		entry, cond := translatePrivateResource(pr, in)
+		if cond != nil {
+			v.Accepted = *cond
+			resources[name] = v
+			continue
+		}
+		v.Accepted = withNotes(v.Accepted, entry.notes)
+		resources[name] = v
+		candidates = append(candidates, candidate{
+			claimant:  claimant{kind: kindPrivateResource, name: name},
+			createdAt: pr.CreationTimestamp,
+			entry:     entry,
 		})
 	}
 
@@ -185,18 +256,31 @@ func Render(in Inputs) (pangolin.Blueprint, map[types.NamespacedName]Verdict) {
 		PublicResources:  map[string]pangolin.PublicResource{},
 		PrivateResources: map[string]pangolin.PrivateResource{},
 	}
-	resolveCollisions(candidates, bp, verdicts)
-	return bp, verdicts
+	for c, o := range resolveCollisions(candidates, bp) {
+		switch c.kind {
+		case kindHTTPRoute:
+			v := verdicts[c.name]
+			v.Key = o.key
+			if o.rejected != nil {
+				v.Accepted = *o.rejected
+			}
+			verdicts[c.name] = v
+		case kindPrivateResource:
+			v := resources[c.name]
+			v.Key = o.key
+			if o.rejected != nil {
+				v.Accepted = *o.rejected
+			}
+			resources[c.name] = v
+		}
+	}
+	return Result{Blueprint: bp, Routes: verdicts, PrivateResources: resources}
 }
 
 // resolveCollisions awards each key and hostname to its oldest claimant. Order is
-// total — creation time, then namespace, then name — so equal timestamps cannot
-// make the published set depend on map iteration order.
-func resolveCollisions(
-	candidates []candidate,
-	bp pangolin.Blueprint,
-	verdicts map[types.NamespacedName]Verdict,
-) {
+// total — creation time, namespace, name, kind — so equal timestamps cannot make
+// the published set depend on map iteration order.
+func resolveCollisions(candidates []candidate, bp pangolin.Blueprint) map[claimant]outcome {
 	sort.SliceStable(candidates, func(i, j int) bool {
 		a, b := candidates[i], candidates[j]
 		switch {
@@ -204,45 +288,58 @@ func resolveCollisions(
 			return a.createdAt.Before(&b.createdAt)
 		case a.name.Namespace != b.name.Namespace:
 			return a.name.Namespace < b.name.Namespace
-		default:
+		case a.name.Name != b.name.Name:
 			return a.name.Name < b.name.Name
+		default:
+			return a.kind < b.kind
 		}
 	})
 
-	// Both maps span the sections. Pangolin checks each section on its own, but
-	// two routes claiming one hostname is a mistake whichever side they sit on,
-	// and the check on the private side is narrower than it appears.
-	keyOwner := map[string]types.NamespacedName{}
-	hostOwner := map[string]types.NamespacedName{}
+	// Both maps span the sections and both kinds. Pangolin checks each section
+	// on its own, but two objects claiming one name is a mistake whichever side
+	// they sit on, and the check on the private side is narrower than it appears.
+	keyOwner := map[string]claimant{}
+	hostOwner := map[string]claimant{}
+	outcomes := make(map[claimant]outcome, len(candidates))
 
 	for _, c := range candidates {
 		if owner, taken := keyOwner[c.entry.key]; taken {
-			c.verdict.Accepted = rejected(gatewayv1.RouteConditionReason(ReasonDuplicateKey),
+			cond := rejected(gatewayv1.RouteConditionReason(ReasonDuplicateKey),
 				"resource key %q is already claimed by %s", c.entry.key, owner)
-			c.verdict.Key = ""
-			verdicts[c.name] = c.verdict
+			outcomes[c.claimant] = outcome{rejected: &cond}
 			continue
 		}
-		if owner, taken := hostOwner[c.entry.fullDomain]; taken {
-			c.verdict.Accepted = rejected(gatewayv1.RouteConditionReason(ReasonDuplicateHostname),
-				"hostname %q is already claimed by %s", c.entry.fullDomain, owner)
-			c.verdict.Key = ""
-			verdicts[c.name] = c.verdict
+		if host, owner, taken := firstClaimed(c.entry.hostnames, hostOwner); taken {
+			cond := rejected(gatewayv1.RouteConditionReason(ReasonDuplicateHostname),
+				"hostname %q is already claimed by %s", host, owner)
+			outcomes[c.claimant] = outcome{rejected: &cond}
 			continue
 		}
 
-		keyOwner[c.entry.key] = c.name
-		hostOwner[c.entry.fullDomain] = c.name
+		keyOwner[c.entry.key] = c.claimant
+		for _, h := range c.entry.hostnames {
+			hostOwner[strings.ToLower(h)] = c.claimant
+		}
 		switch {
 		case c.entry.public != nil:
 			bp.PublicResources[c.entry.key] = *c.entry.public
 		case c.entry.private != nil:
 			bp.PrivateResources[c.entry.key] = *c.entry.private
 		}
-
-		c.verdict.Key = c.entry.key
-		verdicts[c.name] = c.verdict
+		outcomes[c.claimant] = outcome{key: c.entry.key}
 	}
+	return outcomes
+}
+
+// firstClaimed compares case-insensitively: DNS does, even where Pangolin's own
+// uniqueness check does not.
+func firstClaimed(hostnames []string, owners map[string]claimant) (string, claimant, bool) {
+	for _, h := range hostnames {
+		if owner, taken := owners[strings.ToLower(h)]; taken {
+			return h, owner, true
+		}
+	}
+	return "", claimant{}, false
 }
 
 // translate validates one route and builds its blueprint entry. A non-nil
@@ -327,14 +424,15 @@ func translate(r gatewayv1.HTTPRoute, in Inputs) (rendered, *ConditionResult) {
 		return fail(gatewayv1.RouteReasonUnsupportedValue, "%s", err)
 	}
 
-	entry := rendered{key: Key(r.Namespace, r.Name), fullDomain: host}
+	entry := rendered{key: Key(r.Namespace, r.Name), hostnames: []string{host}}
 
 	if visibility == VisibilityPrivate {
-		resource, err := privateResource(r, name, host, site, backendHost, backendPort)
+		resource, notes, err := privateResource(r, in, name, host, site, backendHost, backendPort)
 		if err != nil {
 			return fail(gatewayv1.RouteReasonUnsupportedValue, "%s", err)
 		}
 		entry.private = resource
+		entry.notes = notes
 		return entry, nil
 	}
 
@@ -416,30 +514,35 @@ func publicResource(
 
 func privateResource(
 	r gatewayv1.HTTPRoute,
+	in Inputs,
 	name, host, site, backendHost string,
 	backendPort int32,
-) (*pangolin.PrivateResource, error) {
+) (*pangolin.PrivateResource, []string, error) {
 	// A private resource has no auth block, no targets and no rules. Publishing
 	// one while dropping any of these would protect it differently from what the
 	// route says, so each is refused rather than ignored.
 	if err := refuseAnnotations(r, "a private route",
 		"access is granted by "+AnnotationRoles+" and "+AnnotationUsers,
 		AnnotationSSO, AnnotationAccessRules, AnnotationBasicAuth); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := refuseAnnotations(r, "a private route",
 		"a private resource has no targets to check",
 		healthcheckAnnotations...); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	roles, err := grantList(r, AnnotationRoles)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	users, err := grantList(r, AnnotationUsers)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	notes, gerr := checkPrivateGrants(roles, users, nil, in)
+	if gerr != nil {
+		return nil, nil, gerr
 	}
 
 	return &pangolin.PrivateResource{
@@ -452,7 +555,7 @@ func privateResource(
 		Scheme:          pangolin.SchemeHTTP,
 		Roles:           roles,
 		Users:           users,
-	}, nil
+	}, notes, nil
 }
 
 func fail(

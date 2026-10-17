@@ -13,6 +13,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -21,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	"github.com/p3l1/pangolin-gateway/api/v1alpha1"
 	"github.com/p3l1/pangolin-gateway/internal/gateway"
 )
 
@@ -32,7 +34,8 @@ const (
 	readyTimeout   = 3 * time.Minute
 )
 
-// newClient builds a client for kubeContext, with the Gateway API types registered.
+// newClient builds a client for kubeContext, with the Gateway API and
+// pangolin.p3l1.de types registered.
 func newClient(t *testing.T) client.Client {
 	t.Helper()
 
@@ -50,6 +53,9 @@ func newClient(t *testing.T) client.Client {
 	}
 	if err := gatewayv1.Install(scheme); err != nil {
 		t.Fatalf("registering gateway-api scheme: %v", err)
+	}
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("registering pangolin.p3l1.de scheme: %v", err)
 	}
 
 	c, err := client.New(cfg, client.Options{Scheme: scheme})
@@ -507,6 +513,101 @@ func TestBasicAuthCredentialIsGeneratedInTheCluster(t *testing.T) {
 		}
 		if got := basic["extendedCompatibility"]; got != true {
 			return fmt.Errorf("extendedCompatibility = %v, want true", got)
+		}
+		return nil
+	})
+}
+
+// The chart's CRD and RBAC are only exercised here: the controller must watch
+// PrivateResources, write their status, and prune what they no longer claim.
+func TestPrivateResourceIsPublishedAndPruned(t *testing.T) {
+	c := newClient(t)
+	ctx := context.Background()
+
+	waitForDeployment(t, c, deploymentName)
+	waitForDeployment(t, c, fakeDeployment)
+
+	host := &v1alpha1.PrivateResource{}
+	host.Namespace = namespace
+	host.Name = "e2e-webhook"
+	host.Spec = v1alpha1.PrivateResourceSpec{
+		DisplayName: "E2E Webhook",
+		Mode:        v1alpha1.ModeHost,
+		Destination: "e2e-webhook." + namespace + ".svc.cluster.local",
+		Alias:       "e2e-webhook.homelab.internal",
+		TCPPorts:    "8080",
+		Machines:    []string{"test-machine"},
+	}
+	web := &v1alpha1.PrivateResource{}
+	web.Namespace = namespace
+	web.Name = "e2e-docs"
+	web.Spec = v1alpha1.PrivateResourceSpec{
+		Mode:            v1alpha1.ModeHTTP,
+		FullDomain:      "e2e-docs.example.com",
+		Destination:     "e2e-docs." + namespace + ".svc.cluster.local",
+		DestinationPort: 3000,
+		Roles:           []string{"Member"},
+	}
+	for _, pr := range []*v1alpha1.PrivateResource{host, web} {
+		if err := c.Create(ctx, pr); err != nil {
+			t.Fatalf("creating PrivateResource %s: %v", pr.Name, err)
+		}
+		t.Cleanup(func() { _ = c.Delete(context.Background(), pr) })
+	}
+
+	hostKey := "gw-pr-" + namespace + "-e2e-webhook"
+	webKey := "gw-pr-" + namespace + "-e2e-docs"
+
+	eachPoll(t, readyTimeout, func() error {
+		state := readFakeState(t)
+		h, ok := state.PrivateResources[hostKey]
+		if !ok {
+			return fmt.Errorf("%s not published yet; fake holds %v", hostKey, keysOf(state.PrivateResources))
+		}
+		if h["mode"] != "host" || h["alias"] != "e2e-webhook.homelab.internal" ||
+			h["tcp-ports"] != "8080" || h["udp-ports"] != "" {
+			return fmt.Errorf("host entry = %v", h)
+		}
+		w, ok := state.PrivateResources[webKey]
+		if !ok {
+			return fmt.Errorf("%s not published yet", webKey)
+		}
+		if w["mode"] != "http" || w["full-domain"] != "e2e-docs.example.com" || w["ssl"] != true {
+			return fmt.Errorf("http entry = %v", w)
+		}
+		return nil
+	})
+
+	eachPoll(t, readyTimeout, func() error {
+		var live v1alpha1.PrivateResource
+		if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: host.Name}, &live); err != nil {
+			return err
+		}
+		programmed := meta.FindStatusCondition(live.Status.Conditions, v1alpha1.ConditionProgrammed)
+		if programmed == nil || programmed.Status != "True" {
+			return fmt.Errorf("Programmed = %+v, want True", programmed)
+		}
+		if live.Status.ResourceKey != hostKey {
+			return fmt.Errorf("resourceKey = %q, want %q", live.Status.ResourceKey, hostKey)
+		}
+		return nil
+	})
+
+	before := len(readFakeState(t).PrivateDeleted)
+	if err := c.Delete(ctx, host); err != nil {
+		t.Fatalf("deleting PrivateResource: %v", err)
+	}
+
+	eachPoll(t, readyTimeout, func() error {
+		state := readFakeState(t)
+		if _, ok := state.PrivateResources[hostKey]; ok {
+			return fmt.Errorf("%s survived its PrivateResource", hostKey)
+		}
+		if _, ok := state.PrivateResources[webKey]; !ok {
+			return fmt.Errorf("%s went with it; only the deleted resource may be pruned", webKey)
+		}
+		if len(state.PrivateDeleted) <= before {
+			return fmt.Errorf("no DELETE reached the private endpoint")
 		}
 		return nil
 	})

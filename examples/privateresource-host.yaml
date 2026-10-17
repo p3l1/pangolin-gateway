@@ -1,0 +1,18 @@
+# One host reachable through a site, by its alias, on the ports named. Only the
+# CI machine client may connect; org admins always can.
+apiVersion: pangolin.p3l1.de/v1alpha1
+kind: PrivateResource
+metadata:
+  name: tekton-webhook
+  namespace: tekton-pipelines
+spec:
+  displayName: Tekton Webhook
+  mode: host
+  sites: [my-site]
+  # An IP needs no alias; a hostname does.
+  destination: el-webhook.tekton-pipelines.svc.cluster.local
+  alias: tekton-webhook.homelab.internal
+  # Unset means none, unlike a hand-written blueprint where unset means "*".
+  tcpPorts: "8080"
+  machines:
+    - fine-mastigoproctus-giganteus

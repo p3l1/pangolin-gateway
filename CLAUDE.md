@@ -1,7 +1,7 @@
 # Repository guide
 
-A Kubernetes controller publishing Gateway API `HTTPRoute`s as resources in a Pangolin
-instance. Go, controller-runtime, Helm.
+A Kubernetes controller publishing Gateway API `HTTPRoute`s, and its own `PrivateResource`
+objects, as resources in a Pangolin instance. Go, controller-runtime, Helm.
 
 ## Commands
 
@@ -12,8 +12,8 @@ CI runs:
 - `just test` — envtest against a real API server, with the Pangolin fake. Run before every
   commit.
 - `just e2e` — k3d, chart install, assertions against the fake. Run before opening a PR.
-- `just verify` — regenerate RBAC and fail if the result is uncommitted, or if `Chart.yaml`'s
-  `version` and `appVersion` diverge (release automation rewrites both).
+- `just verify` — regenerate deepcopy, CRDs and RBAC and fail if the result is uncommitted, or
+  if `Chart.yaml`'s `version` and `appVersion` diverge (release automation rewrites both).
 - `just --list` — everything else.
 
 ## Safety
@@ -27,6 +27,8 @@ These are hard constraints, not preferences:
 
 ## Layout
 
+- `api/v1alpha1/` — the `PrivateResource` kind (`pangolin.p3l1.de`). `zz_generated.deepcopy.go`
+  is generated; never edit it by hand.
 - `cmd/main.go` — process entry point; wires flags into `manager.Config` and the Pangolin
   client, then starts the controller-runtime manager.
 - `internal/gateway/` — `render.go` turns Gateway API objects into a blueprint and a verdict
@@ -35,25 +37,30 @@ These are hard constraints, not preferences:
   display-name at the top of `render.go`, the healthcheck in `healthcheck.go`, access rules
   in `rules.go`, visibility and grants in `visibility.go`, basic auth in `basicauth.go`.
   Credentials are resolved before the render, by `internal/controller/basicauth.go`, and
-  handed in through `Inputs.BasicAuth` so the renderer stays pure.
-- `internal/pangolin/` — the Integration API client behind a six-method interface, the
+  handed in through `Inputs.BasicAuth` so the renderer stays pure. `privateresource.go`
+  translates a `PrivateResource`; `RenderAll` returns verdicts for both kinds, and both
+  compete in one collision check.
+- `internal/pangolin/` — the Integration API client behind an eight-method interface, the
   blueprint types, and the dry-run decorator.
 - `internal/controller/publisher.go` — the single reconciler, plus its metrics.
 - `internal/manager/` — manager assembly (`Config`, `ControllerOptions`), the leader-election
   ID and the controller name.
 - `internal/version/` — build metadata (`version.String()`), stamped by `-ldflags`.
 - `charts/pangolin-gateway/` — the chart users install. RBAC lands in `templates/rbac.yaml`
-  via `just generate`.
+  and the CRD in `templates/crds.yaml`, both via `just generate`.
+- `config/crd/bases/`, `config/rbac/` — controller-gen output, the source of the chart copies.
 - `test/pangolinfake/` — the fake Integration API, used by both envtest and e2e. Also builds
   into its own image for the e2e cluster.
 - `test/envtest/`, `test/e2e/` — the medium and full verification tiers.
 - `test/envtestenv/` — the importable envtest harness (`Start`). Controller tests live beside
   their controller under `internal/controller/` and run in the medium tier (`just test`).
 
-This project defines **no CRDs**. There is no `api/` and no `config/crd`; `controller-gen`
-runs only for RBAC markers. The Gateway API types come from `sigs.k8s.io/gateway-api`, and
-the CRDs envtest and k3d need are resolved from the module cache by `just gateway-crds` —
-so the schemas under test are always the ones `go.mod` pins.
+This project defines **one CRD**, `privateresources.pangolin.p3l1.de`, generated from
+`api/v1alpha1` by `just generate` (deepcopy, CRD, RBAC). The chart ships it as a template —
+not in `crds/`, which Helm never upgrades — annotated `helm.sh/resource-policy: keep` unless
+`crds.keep=false`. envtest loads it from `config/crd/bases`. The Gateway API types come from
+`sigs.k8s.io/gateway-api`, and the CRDs envtest and k3d need are resolved from the module
+cache by `just gateway-crds` — so the schemas under test are always the ones `go.mod` pins.
 
 ## Conventions
 
@@ -71,16 +78,17 @@ so the schemas under test are always the ones `go.mod` pins.
 
 ## How the controller works
 
-**One reconciler on a fixed key.** All three watches — HTTPRoute, Gateway, GatewayClass — map
-to the same request, so the workqueue coalesces a burst into one pass and the whole desired
-state goes out in a single apply. Watches carry a `GenerationChanged OR AnnotationChanged`
+**One reconciler on a fixed key.** All four watches — HTTPRoute, Gateway, GatewayClass,
+PrivateResource — map to the same request, so the workqueue coalesces a burst into one pass
+and the whole desired state goes out in a single apply. Watches carry a `GenerationChanged OR AnnotationChanged`
 predicate: a status write is itself a watch event, and status writes do not bump generation,
 so without this the controller loops against itself.
 
-**A pass is:** read all three kinds (any read error aborts before anything is written) →
+**A pass is:** read all four kinds (any read error aborts before anything is written) →
 render → apply → prune → write status. The prune runs once per blueprint section, each
 against its own listing. The prune runs only after a successful apply and a
-complete listing, and deletes only resources whose niceId starts with `gw-`.
+complete listing, and deletes only resources whose niceId starts with `gw-`. Routes are keyed
+`gw-<ns>-<name>`, PrivateResources `gw-pr-<ns>-<name>`.
 
 **No finalizer.** A deleted route is simply absent from the next render and the prune removes
 its resource. A finalizer would block namespace deletion whenever the controller is down.
@@ -88,7 +96,9 @@ its resource. A finalizer would block namespace deletion whenever the controller
 **Status is per parentRef.** An HTTPRoute's conditions live in `status.parents[]`, each entry
 keyed by parentRef and `controllerName`. Only entries carrying `p3l1.de/pangolin` may be
 touched; others belong to other controllers. `SetRouteStatus` returns whether anything
-changed, and the caller must skip the write when it did not.
+changed, and the caller must skip the write when it did not. A PrivateResource has plain
+`status.conditions` — `Accepted` from the renderer, `Programmed` from the apply's outcome —
+and the same skip-when-unchanged rule.
 
 ## Pangolin
 
@@ -126,10 +136,16 @@ Target version is v1.22.0. Verified against its source, not just the docs:
 - An unknown site in a target throws inside that same transaction, failing the whole document
   as well. The controller lists sites and rejects the offending route up front; when the
   listing is unavailable the check degrades to a warning rather than rejecting everything.
+- A private resource's `roles`, `users` and `machines` are replaced on every apply; omitted
+  equals empty and leaves only the admin role. Unknown roles are created, `Admin` fails the
+  document. `users` match username or e-mail, `machines` client niceIds; a list none of whose
+  names resolve fails the document, so both are checked against `listUsers`/`listClients`
+  the way sites are. An absent `tcp-ports`/`udp-ports` means every port, so host and cidr
+  always send both. Aliases are unique per organisation. Rationale: `docs/private-resources.md`.
 
 **API key actions.** Three are required — `applyBlueprint`, `listResources`, `deleteResource`
 — plus `listSiteResources` and `deleteSiteResource` to prune private resources, and
-`listSites` for the site check above. Every route is guarded by
+`listSites`, `listClients` and `listUsers` for the name checks above. Every route is guarded by
 `verifyApiKeyHasAction`, so a key missing one returns 401/403 for that route alone. Together
 with pointing `--pangolin-endpoint` at the internal API rather than the Integration API, that
 is the most likely cause of an unexplained 401 — which is why `pangolin.AuthError` names both

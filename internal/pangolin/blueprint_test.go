@@ -361,6 +361,35 @@ func TestPrivateResourceMarshalsToPangolinKeys(t *testing.T) {
 	}
 }
 
+// Host and cidr send their port lists even when empty: an absent key would make
+// Pangolin open every port.
+func TestPrivateResourceSendsEmptyPortListsForHostMode(t *testing.T) {
+	empty, closed := "", false
+	raw, err := json.Marshal(PrivateResource{
+		Name: "demo/nas", Mode: ModeHost, Destination: "10.0.0.5",
+		Alias: "nas.internal", TCPPorts: &empty, UDPPorts: &empty, DisableICMP: &closed,
+		Machines: []string{"ci-runner"},
+	})
+	if err != nil {
+		t.Fatalf("marshalling resource: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshalling resource: %v", err)
+	}
+	for key, want := range map[string]any{
+		"tcp-ports": "", "udp-ports": "", "disable-icmp": false, "alias": "nas.internal",
+	} {
+		if v, present := got[key]; !present || v != want {
+			t.Errorf("%s = %v (present %t), want %v", key, v, present, want)
+		}
+	}
+	if m, ok := got["machines"].([]any); !ok || len(m) != 1 || m[0] != "ci-runner" {
+		t.Errorf("machines = %v, want [ci-runner]", got["machines"])
+	}
+}
+
 // tcp-ports, udp-ports and disable-icmp are forced by Pangolin for http mode,
 // and auth has no counterpart on a private resource at all.
 func TestPrivateResourceOmitsWhatHTTPModeDoesNotUse(t *testing.T) {
@@ -375,7 +404,7 @@ func TestPrivateResourceOmitsWhatHTTPModeDoesNotUse(t *testing.T) {
 	}
 	for _, key := range []string{
 		"tcp-ports", "udp-ports", "disable-icmp", "auth", "targets", "rules",
-		"roles", "users", "alias", "ssl",
+		"roles", "users", "machines", "alias", "ssl",
 	} {
 		if _, present := got[key]; present {
 			t.Errorf("resource carries %q, want it omitted when unset", key)

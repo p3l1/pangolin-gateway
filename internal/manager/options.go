@@ -12,6 +12,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"github.com/p3l1/pangolin-gateway/api/v1alpha1"
 )
 
 // Changing this splits an upgrading controller into two active leaders.
@@ -30,6 +32,7 @@ func ControllerOptions(c Config) ctrl.Options {
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
+	utilruntime.Must(v1alpha1.AddToScheme(scheme))
 
 	return ctrl.Options{
 		Scheme: scheme,

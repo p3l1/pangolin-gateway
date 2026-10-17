@@ -20,7 +20,8 @@ pangolin:
   # The integration key, of the form <key_id>.<key_secret>. Supply it yourself;
   # this chart never creates a secret. The key needs three API actions:
   # applyBlueprint, listResources and deleteResource; publishing private
-  # resources also needs listSiteResources and deleteSiteResource.
+  # resources also needs listSiteResources and deleteSiteResource. listSites,
+  # listClients and listUsers let names be checked before the apply.
   apiKeySecret:
     name: ""
     key: apiKey
@@ -28,6 +29,14 @@ pangolin:
   dryRun: false
   # How often to reconcile without a cluster event, repairing drift Pangolin-side.
   resyncInterval: 5m
+
+crds:
+  # Install the PrivateResource CRD. The controller watches it and does not start
+  # without it, so turn this off only when the CRD is installed some other way.
+  install: true
+  # Keep the CRD when the release is uninstalled. Deleting it deletes every
+  # PrivateResource, and the next controller pass prunes them from Pangolin.
+  keep: true
 
 gatewayClass:
   # Install a GatewayClass alongside the controller.

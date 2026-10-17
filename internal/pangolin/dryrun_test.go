@@ -47,6 +47,14 @@ func (c *recordingClient) ListSites(context.Context) ([]Site, error) {
 	return []Site{{NiceID: "test-site"}}, nil
 }
 
+func (c *recordingClient) ListMachines(context.Context) ([]Machine, error) {
+	return []Machine{{NiceID: "ci-runner"}}, nil
+}
+
+func (c *recordingClient) ListUsers(context.Context) ([]User, error) {
+	return []User{{Username: "alice", Email: "alice@example.com"}}, nil
+}
+
 func TestDryRunLetsNoWriteThrough(t *testing.T) {
 	inner := &recordingClient{t: t}
 	d := NewDryRun(inner, logr.Discard())
@@ -97,6 +105,21 @@ func TestDryRunStillReads(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].NiceID != "gw-demo-web" {
 		t.Errorf("listing = %+v, want the inner client's rows", got)
+	}
+}
+
+// The machine and user checks run in a dry run too, so both listings must reach
+// the real instance.
+func TestDryRunStillListsGrantees(t *testing.T) {
+	d := NewDryRun(&recordingClient{t: t}, logr.Discard())
+
+	machines, err := d.ListMachines(context.Background())
+	if err != nil || len(machines) != 1 || machines[0].NiceID != "ci-runner" {
+		t.Errorf("ListMachines = %+v, %v; want the inner client's row", machines, err)
+	}
+	users, err := d.ListUsers(context.Background())
+	if err != nil || len(users) != 1 || users[0].Username != "alice" {
+		t.Errorf("ListUsers = %+v, %v; want the inner client's row", users, err)
 	}
 }
 
