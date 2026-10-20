@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/p3l1/pangolin-gateway/compare/v0.7.1...v0.8.0) (2026-10-20)
+
+
+### Features
+
+* put a PIN in front of a public route ([#38](https://github.com/p3l1/pangolin-gateway/issues/38)) ([63a2580](https://github.com/p3l1/pangolin-gateway/commit/63a25801e63d56b00c5d360750d6adfcc4a82e27))
+
 ## [0.7.1](https://github.com/p3l1/pangolin-gateway/compare/v0.7.0...v0.7.1) (2026-10-17)
 
 
