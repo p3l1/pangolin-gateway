@@ -109,6 +109,10 @@ type Auth struct {
 	// hold it on every apply before reading this one back.
 	BasicAuth *BasicAuth `json:"basic-auth,omitempty"`
 
+	// Cleared and rewritten on every apply like BasicAuth, so omitting it
+	// removes the PIN. Pangolin takes a number, not a string.
+	Pincode *int `json:"pincode,omitempty"`
+
 	// Omitted when unset: Pangolin leaves an absent setting untouched, so an
 	// empty list would revoke what its dashboard granted.
 	SSORoles []string `json:"sso-roles,omitempty"`

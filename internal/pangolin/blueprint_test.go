@@ -222,6 +222,26 @@ func TestAuthOmitsAnAbsentBasicAuth(t *testing.T) {
 	}
 }
 
+// Pangolin's schema takes the PIN as a number; a string fails the whole apply.
+func TestPincodeMarshalsAsANumber(t *testing.T) {
+	pin := 482913
+	raw, err := json.Marshal(Auth{SSOEnabled: true, Pincode: &pin})
+	if err != nil {
+		t.Fatalf("marshalling auth: %v", err)
+	}
+	if !strings.Contains(string(raw), `"pincode":482913`) {
+		t.Errorf("auth = %s, want a numeric pincode", raw)
+	}
+
+	raw, err = json.Marshal(Auth{SSOEnabled: true})
+	if err != nil {
+		t.Fatalf("marshalling auth: %v", err)
+	}
+	if strings.Contains(string(raw), "pincode") {
+		t.Errorf("auth carries a pincode key when unset: %s", raw)
+	}
+}
+
 func TestRulesMarshalToPangolinKeys(t *testing.T) {
 	bp := Blueprint{PublicResources: map[string]PublicResource{
 		"gw-demo-web": {

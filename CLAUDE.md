@@ -35,7 +35,8 @@ These are hard constraints, not preferences:
   per route; `status.go` writes those verdicts into `status.parents`. All pure. The
   `pangolin.p3l1.de/` annotations are declared where they are parsed: sso, site and
   display-name at the top of `render.go`, the healthcheck in `healthcheck.go`, access rules
-  in `rules.go`, visibility and grants in `visibility.go`, basic auth in `basicauth.go`.
+  in `rules.go`, visibility and grants in `visibility.go`, basic auth in `basicauth.go`, the PIN in
+  `pincode.go`.
   Credentials are resolved before the render, by `internal/controller/basicauth.go`, and
   handed in through `Inputs.BasicAuth` so the renderer stays pure. `privateresource.go`
   translates a `PrivateResource`; `RenderAll` returns verdicts for both kinds, and both
@@ -133,6 +134,8 @@ Target version is v1.22.0. Verified against its source, not just the docs:
   protection — unlike the healthcheck columns, which stay. `extendedCompatibility` turns an
   unauthenticated request into a 401 rather than the login page, but Pangolin skips that
   challenge while `sso-enabled` is true.
+- `auth.pincode` is a number from 100000 to 999999, hashed into its own table and cleared
+  on every apply like basic auth. It works beside `sso-enabled`: either session passes.
 - An unknown site in a target throws inside that same transaction, failing the whole document
   as well. The controller lists sites and rejects the offending route up front; when the
   listing is unavailable the check degrades to a warning rather than rejecting everything.

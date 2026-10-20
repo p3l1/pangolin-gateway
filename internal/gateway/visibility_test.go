@@ -250,6 +250,10 @@ func TestRenderRejectsAnnotationsAPrivateResourceCannotHonour(t *testing.T) {
 			map[string]string{AnnotationBasicAuth: "true"},
 			AnnotationBasicAuth,
 		},
+		"pincode": {
+			map[string]string{AnnotationPincode: "482913"},
+			AnnotationPincode,
+		},
 		"access rules": {
 			map[string]string{
 				AnnotationAccessRules: "- action: allow\n  match: path\n  value: /x\n",

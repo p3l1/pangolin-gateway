@@ -478,6 +478,10 @@ func publicResource(
 	if err != nil {
 		return nil, err
 	}
+	pincode, err := pincodeFor(r)
+	if err != nil {
+		return nil, err
+	}
 
 	target := pangolin.Target{
 		Site:     site,
@@ -504,6 +508,7 @@ func publicResource(
 		Auth: &pangolin.Auth{
 			SSOEnabled: sso,
 			BasicAuth:  basicAuth,
+			Pincode:    pincode,
 			SSORoles:   roles,
 			SSOUsers:   users,
 		},
@@ -523,7 +528,7 @@ func privateResource(
 	// route says, so each is refused rather than ignored.
 	if err := refuseAnnotations(r, "a private route",
 		"access is granted by "+AnnotationRoles+" and "+AnnotationUsers,
-		AnnotationSSO, AnnotationAccessRules, AnnotationBasicAuth); err != nil {
+		AnnotationSSO, AnnotationAccessRules, AnnotationBasicAuth, AnnotationPincode); err != nil {
 		return nil, nil, err
 	}
 	if err := refuseAnnotations(r, "a private route",

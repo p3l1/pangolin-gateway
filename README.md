@@ -344,6 +344,37 @@ the header unprompted is let through either way.
 A private route carrying the annotation is rejected: a private resource has no auth
 block to put the credentials in.
 
+## PIN
+
+A public resource can ask for a six-digit PIN on Pangolin's sign-in page:
+
+```yaml
+metadata:
+  annotations:
+    pangolin.p3l1.de/pincode: "482913"
+```
+
+The PIN sits **beside** SSO, not in place of it. With `sso` on, the sign-in page
+offers both, and either one lets a visitor through. Access rules still run first,
+so a path opened with `allow` needs neither.
+
+Unlike basic auth, **the annotation carries the PIN itself**. A PIN is a code for
+people, handed out in a chat or a ticket. It is exactly as secret as the place it
+was posted, so it does not belong in a public repository. Write it from wherever it
+was handed out, such as a template over a pull request's labels.
+
+An empty value means no PIN. A template can therefore always write the key and
+fill it only when it has a code. Removing the annotation or emptying it removes the
+PIN on the next pass: Pangolin clears it on every apply before reading the
+document back.
+
+Pangolin accepts 100000 to 999999 and nothing else. A value outside that range, a
+leading zero included, is rejected on the route rather than sent, because an apply
+Pangolin refuses unpublishes every other route along with it.
+
+A private route carrying the annotation is rejected: a private resource has no
+sign-in page to ask on.
+
 ## Private resources
 
 Pangolin separates resources reachable from the internet from those reachable only through a
@@ -470,6 +501,7 @@ route, cross-namespace backends via ReferenceGrant, and listener/`allowedRoutes`
 | Malformed access rule | `Accepted: False`, `UnsupportedValue` |
 | Annotation the chosen visibility cannot honour | `Accepted: False`, `UnsupportedValue` |
 | Basic auth asked for, credentials unavailable | `Accepted: False`, `UnsupportedValue` |
+| PIN that is not six digits from 100000 | `Accepted: False`, `UnsupportedValue` |
 | parentRef names no existing Gateway | `Accepted: False`, `NoMatchingParent` |
 
 Conditions are written per parentRef into `status.parents[]`, only on entries belonging to
