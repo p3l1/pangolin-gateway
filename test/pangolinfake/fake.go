@@ -853,8 +853,7 @@ func parseMtlsCertificates(pems []string) ([]pangolin.MtlsCertificate, string) {
 			if err != nil {
 				return nil, "ca-certificate is not a valid certificate"
 			}
-			sum := sha256.Sum256(cert.Raw)
-			fp := hex.EncodeToString(sum[:])
+			fp := fingerprint256(cert.Raw)
 			if seen[fp] {
 				continue
 			}
@@ -870,6 +869,18 @@ func parseMtlsCertificates(pems []string) ([]pangolin.MtlsCertificate, string) {
 		return nil, "too many mTLS certificates (max 20)"
 	}
 	return out, ""
+}
+
+// fingerprint256 formats a SHA-256 over the certificate DER the way Pangolin's
+// Node X509Certificate.fingerprint256 does: uppercase hex, colon-separated.
+func fingerprint256(der []byte) string {
+	sum := sha256.Sum256(der)
+	hexed := strings.ToUpper(hex.EncodeToString(sum[:]))
+	pairs := make([]string, 0, len(hexed)/2)
+	for i := 0; i < len(hexed); i += 2 {
+		pairs = append(pairs, hexed[i:i+2])
+	}
+	return strings.Join(pairs, ":")
 }
 
 func sortStrings(s []string) {

@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,8 +83,14 @@ func TestFakeStoresAndServesMtlsCertificates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listing mtls certificates: %v", err)
 	}
-	if len(certs) != 1 || certs[0].Fingerprint == "" {
-		t.Errorf("certificates = %+v, want one with a fingerprint", certs)
+	if len(certs) != 1 {
+		t.Fatalf("certificates = %+v, want exactly one", certs)
+	}
+	// Real Pangolin returns Node's X509Certificate.fingerprint256: uppercase hex,
+	// colon-separated. The fake mirrors it so verification's normalization is
+	// exercised against the format the controller actually meets.
+	if fp := certs[0].Fingerprint; !strings.Contains(fp, ":") || fp != strings.ToUpper(fp) {
+		t.Errorf("fingerprint = %q, want uppercase colon-separated like Pangolin", fp)
 	}
 }
 
