@@ -27,6 +27,10 @@ type Client interface {
 	ListUsers(ctx context.Context) ([]User, error)
 	DeletePublicResource(ctx context.Context, id int) error
 	DeletePrivateResource(ctx context.Context, id int) error
+
+	// ListResourceMtlsCertificates reads a resource's trusted CA set, so an apply
+	// of auth.mtls can be confirmed to have taken effect.
+	ListResourceMtlsCertificates(ctx context.Context, id int) ([]MtlsCertificate, error)
 }
 
 // The API key action each route is guarded by, named in AuthError so a denial
@@ -43,6 +47,9 @@ const (
 	// they are guarded by their own pair of actions.
 	actionListSiteResources  = "listSiteResources"
 	actionDeleteSiteResource = "deleteSiteResource"
+
+	// Reading a resource's trusted CA set to confirm an mTLS apply took effect.
+	actionListResourceMtlsCertificates = "listResourceMtlsCertificates"
 )
 
 const (
@@ -418,4 +425,31 @@ func (c *HTTPClient) DeletePrivateResource(ctx context.Context, id int) error {
 		return fmt.Errorf("deleting private resource %d: %w", id, err)
 	}
 	return nil
+}
+
+// MtlsCertificate is one trusted client-certificate CA as Pangolin stores it.
+// Fingerprint is the SHA-256 of the certificate, which the verify step compares
+// against the certificates it sent.
+type MtlsCertificate struct {
+	Fingerprint string `json:"fingerprint"`
+	Subject     string `json:"subject"`
+	NotAfter    string `json:"notAfter"`
+}
+
+type mtlsCertificatesData struct {
+	Certificates []MtlsCertificate `json:"certificates"`
+}
+
+func (c *HTTPClient) ListResourceMtlsCertificates(ctx context.Context, id int) ([]MtlsCertificate, error) {
+	path := "/public-resource/" + strconv.Itoa(id) + "/mtls/certificates"
+	raw, err := c.do(ctx, http.MethodGet, path, actionListResourceMtlsCertificates, nil)
+	if err != nil {
+		return nil, fmt.Errorf("listing mTLS certificates for resource %d: %w", id, err)
+	}
+
+	var env envelope[mtlsCertificatesData]
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, fmt.Errorf("decoding mTLS certificates for resource %d: %w", id, err)
+	}
+	return env.Data.Certificates, nil
 }

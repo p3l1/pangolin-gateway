@@ -447,3 +447,39 @@ func TestGranteeListingAuthErrorsNameTheirAction(t *testing.T) {
 		}
 	}
 }
+
+func TestListResourceMtlsCertificatesReturnsTheSet(t *testing.T) {
+	var gotMethod, gotPath string
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		_, _ = fmt.Fprint(w, `{"success":true,"error":false,"message":"ok","status":200,"data":{`+
+			`"certificates":[{"fingerprint":"ab","subject":"CN=ca","notAfter":"2027-01-01T00:00:00Z"}]}}`)
+	}))
+
+	certs, err := c.ListResourceMtlsCertificates(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("ListResourceMtlsCertificates: %v", err)
+	}
+	if gotMethod != http.MethodGet {
+		t.Errorf("method = %s, want GET", gotMethod)
+	}
+	if want := "/v1/public-resource/7/mtls/certificates"; gotPath != want {
+		t.Errorf("path = %s, want %s", gotPath, want)
+	}
+	if len(certs) != 1 || certs[0].Fingerprint != "ab" {
+		t.Errorf("certificates = %+v, want one with fingerprint ab", certs)
+	}
+}
+
+func TestListResourceMtlsCertificatesAuthErrorNamesItsAction(t *testing.T) {
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = fmt.Fprint(w, `{"success":false,"error":true,"message":"denied","status":401,"data":null}`)
+	}))
+
+	_, err := c.ListResourceMtlsCertificates(context.Background(), 7)
+	var authErr *AuthError
+	if !errors.As(err, &authErr) || authErr.Action != "listResourceMtlsCertificates" {
+		t.Errorf("error = %v, want an AuthError naming listResourceMtlsCertificates", err)
+	}
+}
