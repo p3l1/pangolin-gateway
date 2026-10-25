@@ -33,7 +33,9 @@ removes it; a finalizer would block namespace deletion whenever the controller i
 
 ## Requirements
 
-- Pangolin v1.22.0 or newer, with the Integration API reachable from the cluster
+- Pangolin v1.25.3 or newer, with the Integration API reachable from the cluster. The
+  [mTLS](#mtls) auth method additionally needs an Enterprise/SaaS build; everything else
+  works on any build
 - An Integration API key of the form `<key_id>.<key_secret>`
 - The Gateway API CRDs installed in the cluster. The chart installs the controller's own
   `PrivateResource` CRD.
@@ -56,6 +58,11 @@ keeps working, but that failure mode returns.
 `listClients` and `listUsers` are recommended for the same reason as soon as a
 `PrivateResource` grants access to machines or users: a grant list none of whose names exist
 also fails the whole apply. They are only called while something names a machine or a user.
+
+`listResourceMtlsCertificates` is needed only once a route uses [mTLS](#mtls). After each
+apply the controller reads the resource's trusted CA set back to confirm it took effect; a
+key without the action, or a non-Enterprise build, makes that check fail and the route reports
+`MtlsNotApplied` rather than a client-certificate requirement that is silently off.
 
 ## Installing
 
@@ -375,6 +382,48 @@ Pangolin refuses unpublishes every other route along with it.
 A private route carrying the annotation is rejected: a private resource has no
 sign-in page to ask on.
 
+## mTLS
+
+A public resource can require a client certificate during the TLS handshake. The
+client must present a certificate signed by one of the CAs the route names, or
+Pangolin refuses the connection before any sign-in page. mTLS sits **on top of**
+the other methods: a route may use it alone or alongside SSO, a PIN, or basic auth.
+
+Name the CA with exactly one of three annotations, all pointing at the **public**
+CA certificate only — never a private key:
+
+```yaml
+metadata:
+  annotations:
+    # one of:
+    pangolin.p3l1.de/mtls-ca-secret: corporate-ca      # a Secret in the route's namespace
+    pangolin.p3l1.de/mtls-ca-configmap: step-ca-root   # a ConfigMap in the route's namespace
+    pangolin.p3l1.de/mtls-ca: |                         # or an inline PEM
+      -----BEGIN CERTIFICATE-----
+      ...
+      -----END CERTIFICATE-----
+```
+
+From a **Secret** the CA is read from `ca.crt`, falling back to `tls.crt`, so both a
+cert-manager CA Secret and any issued certificate's Secret work; the Secret type is not
+checked, only the key. From a **ConfigMap** it is read from `ca.crt`, falling back to
+`root_ca.crt`, which is step-ca's default. Each value may be a single certificate or a PEM
+bundle of several, up to the 20 Pangolin allows. The controller runs its own CA in neither
+case — it only publishes the trust anchor; issuing and rotating client certificates is the
+CA's job. A Secret or ConfigMap that is missing, or carries no certificate, a private key, or
+too many, rejects the route rather than publishing it without the protection it asked for.
+
+**It must be an Enterprise/SaaS Pangolin.** On an open-source build the `auth.mtls` field is
+silently dropped at apply, so mTLS would be off while the route looked published. To catch
+that, the controller reads the trusted CA set back after each apply and compares it against
+what it sent; a set that is empty, mismatched, or unreadable flips that route alone to
+`MtlsNotApplied` (see [Status conditions](#status-conditions)). This needs the
+`listResourceMtlsCertificates` API-key action.
+
+A private route carrying any mTLS annotation is rejected, as with the other auth methods.
+
+Rationale and the source behind the open-source gate: [docs/mtls.md](docs/mtls.md).
+
 ## Private resources
 
 Pangolin separates resources reachable from the internet from those reachable only through a
@@ -502,6 +551,8 @@ route, cross-namespace backends via ReferenceGrant, and listener/`allowedRoutes`
 | Annotation the chosen visibility cannot honour | `Accepted: False`, `UnsupportedValue` |
 | Basic auth asked for, credentials unavailable | `Accepted: False`, `UnsupportedValue` |
 | PIN that is not six digits from 100000 | `Accepted: False`, `UnsupportedValue` |
+| mTLS CA unreadable, absent, a private key, or over 20 | `Accepted: False`, `UnsupportedValue` |
+| mTLS CA did not take effect (non-Enterprise build, or missing action) | `Accepted: False`, `MtlsNotApplied` |
 | parentRef names no existing Gateway | `Accepted: False`, `NoMatchingParent` |
 
 Conditions are written per parentRef into `status.parents[]`, only on entries belonging to

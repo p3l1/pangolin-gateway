@@ -1,0 +1,35 @@
+# A public route that also requires a client certificate (mTLS). The CA's public
+# certificate is supplied by the operator; here it lives in a ConfigMap, which is
+# how step-ca stores its root (root_ca.crt). A Secret (mtls-ca-secret) or an
+# inline PEM (mtls-ca) work the same way. Needs an Enterprise/SaaS Pangolin.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: corporate-ca
+  namespace: demo
+data:
+  # The public CA certificate only — never a private key.
+  ca.crt: |
+    -----BEGIN CERTIFICATE-----
+    ...replace with your CA's public certificate...
+    -----END CERTIFICATE-----
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: web
+  namespace: demo
+  annotations:
+    # Clients must present a certificate signed by this CA during the TLS
+    # handshake. mTLS stacks on top of sso; set sso to "false" to gate on the
+    # client certificate alone.
+    pangolin.p3l1.de/mtls-ca-configmap: corporate-ca
+spec:
+  parentRefs:
+    - name: pangolin
+  hostnames:
+    - demo.example.com
+  rules:
+    - backendRefs:
+        - name: web
+          port: 8080
