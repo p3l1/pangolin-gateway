@@ -39,6 +39,7 @@ const (
 	ReasonUnknownSite       = "UnknownSite"
 	ReasonPublishFailed     = "PublishFailed"
 	ReasonDryRun            = "DryRun"
+	ReasonMtlsNotApplied    = "MtlsNotApplied"
 )
 
 type Inputs struct {
@@ -53,6 +54,11 @@ type Inputs struct {
 	// package does not do; a missing entry rejects the route rather than
 	// publishing it without the protection it asked for.
 	BasicAuth map[types.NamespacedName]BasicAuthResult
+
+	// MTLS carries the trusted CAs the reconciler resolved for the routes that
+	// named a source. Like BasicAuth, a missing or unresolved entry rejects the
+	// route rather than publishing it without the client-certificate check.
+	MTLS map[types.NamespacedName]MTLSResult
 
 	// KnownSites holds the site niceIds Pangolin accepts. Pangolin rejects the
 	// whole apply for a single unknown site, so one mistyped annotation would
@@ -482,6 +488,10 @@ func publicResource(
 	if err != nil {
 		return nil, err
 	}
+	mtls, err := mtlsFor(r, in)
+	if err != nil {
+		return nil, err
+	}
 
 	target := pangolin.Target{
 		Site:     site,
@@ -509,6 +519,7 @@ func publicResource(
 			SSOEnabled: sso,
 			BasicAuth:  basicAuth,
 			Pincode:    pincode,
+			MTLS:       mtls,
 			SSORoles:   roles,
 			SSOUsers:   users,
 		},
@@ -528,7 +539,8 @@ func privateResource(
 	// route says, so each is refused rather than ignored.
 	if err := refuseAnnotations(r, "a private route",
 		"access is granted by "+AnnotationRoles+" and "+AnnotationUsers,
-		AnnotationSSO, AnnotationAccessRules, AnnotationBasicAuth, AnnotationPincode); err != nil {
+		append([]string{AnnotationSSO, AnnotationAccessRules, AnnotationBasicAuth, AnnotationPincode},
+			mtlsAnnotations...)...); err != nil {
 		return nil, nil, err
 	}
 	if err := refuseAnnotations(r, "a private route",

@@ -73,3 +73,9 @@ func (d *DryRun) DeletePrivateResource(_ context.Context, id int) error {
 	d.Log.Info("dry run: would delete private resource", "siteResourceId", id)
 	return nil
 }
+
+// mTLS verification does not run in a rehearsal, so this answers empty without
+// reaching the instance.
+func (d *DryRun) ListResourceMtlsCertificates(context.Context, int) ([]MtlsCertificate, error) {
+	return nil, nil
+}

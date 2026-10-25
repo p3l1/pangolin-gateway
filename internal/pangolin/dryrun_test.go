@@ -55,6 +55,11 @@ func (c *recordingClient) ListUsers(context.Context) ([]User, error) {
 	return []User{{Username: "alice", Email: "alice@example.com"}}, nil
 }
 
+func (c *recordingClient) ListResourceMtlsCertificates(context.Context, int) ([]MtlsCertificate, error) {
+	c.t.Error("ListResourceMtlsCertificates reached the inner client during a dry run")
+	return nil, nil
+}
+
 func TestDryRunLetsNoWriteThrough(t *testing.T) {
 	inner := &recordingClient{t: t}
 	d := NewDryRun(inner, logr.Discard())
@@ -134,5 +139,19 @@ func TestDryRunPropagatesReadErrors(t *testing.T) {
 
 	if _, err := d.ListPublicResources(context.Background()); err == nil {
 		t.Error("a failing listing was swallowed")
+	}
+}
+
+// mTLS verification does not run in a rehearsal, so the decorator answers empty
+// without reaching the instance; the inner client would t.Error if it were hit.
+func TestDryRunSkipsMtlsVerification(t *testing.T) {
+	d := NewDryRun(&recordingClient{t: t}, logr.Discard())
+
+	got, err := d.ListResourceMtlsCertificates(context.Background(), 7)
+	if err != nil {
+		t.Errorf("ListResourceMtlsCertificates returned %v, want nil", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ListResourceMtlsCertificates = %+v, want empty", got)
 	}
 }

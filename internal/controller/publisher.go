@@ -140,6 +140,12 @@ func (p *Publisher) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result,
 	}
 	inputs.BasicAuth = basicAuth
 
+	mtls, err := p.resolveMTLS(ctx, gateway.ServedRoutes(inputs))
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolving mTLS CAs: %w", err)
+	}
+	inputs.MTLS = mtls
+
 	result := gateway.RenderAll(inputs)
 	blueprint, verdicts := result.Blueprint, result.Routes
 
@@ -165,6 +171,12 @@ func (p *Publisher) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result,
 		if p.DryRun {
 			markDryRun(verdicts)
 		}
+	}
+
+	// A security control that cannot be confirmed active is reported inactive.
+	// Skipped in a dry run, where nothing was written to confirm.
+	if publishErr == nil && !p.DryRun {
+		p.verifyMTLS(ctx, inputs.MTLS, verdicts)
 	}
 
 	// The prune runs only on a successful apply. Renaming a route produces a new

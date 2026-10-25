@@ -36,7 +36,7 @@ These are hard constraints, not preferences:
   `pangolin.p3l1.de/` annotations are declared where they are parsed: sso, site and
   display-name at the top of `render.go`, the healthcheck in `healthcheck.go`, access rules
   in `rules.go`, visibility and grants in `visibility.go`, basic auth in `basicauth.go`, the PIN in
-  `pincode.go`.
+  `pincode.go`, mTLS CA sources in `mtls.go`.
   Credentials are resolved before the render, by `internal/controller/basicauth.go`, and
   handed in through `Inputs.BasicAuth` so the renderer stays pure. `privateresource.go`
   translates a `PrivateResource`; `RenderAll` returns verdicts for both kinds, and both
@@ -103,7 +103,10 @@ and the same skip-when-unchanged rule.
 
 ## Pangolin
 
-Target version is v1.22.0. Verified against its source, not just the docs:
+Target version is v1.25.3. The behaviours below were verified against v1.22.0 source and
+remain valid (the blueprint is additive and strip-tolerant); mTLS is the exception, added in
+v1.25.0 and only enforced on an Enterprise/SaaS build. Verified against its source, not just
+the docs:
 
 - The blueprint key for a resource type is `mode`; `protocol` is deprecated.
 - `public-resources` is correct and is merged into the internal `proxy-resources` map.
@@ -136,6 +139,13 @@ Target version is v1.22.0. Verified against its source, not just the docs:
   challenge while `sso-enabled` is true.
 - `auth.pincode` is a number from 100000 to 999999, hashed into its own table and cleared
   on every apply like basic auth. It works beside `sso-enabled`: either session passes.
+- `auth.mtls` is `{enabled, ca-certificates:[PEM…]}`, enforced at the TLS handshake and
+  stacked AND over the app-layer auth. Sent on every apply (empty list + `enabled:false`
+  clears it, like basic auth). **Open-source builds strip the field** — the schema is
+  `z.object({})` there — so the controller reads the set back via
+  `listResourceMtlsCertificates` and reports `MtlsNotApplied` when it did not land. A bad CA
+  (private key, unparseable, over 20) fails the whole transactional apply, so the controller
+  validates before sending. Rationale: `docs/mtls.md`.
 - An unknown site in a target throws inside that same transaction, failing the whole document
   as well. The controller lists sites and rejects the offending route up front; when the
   listing is unavailable the check degrades to a warning rather than rejecting everything.
@@ -147,8 +157,9 @@ Target version is v1.22.0. Verified against its source, not just the docs:
   always send both. Aliases are unique per organisation. Rationale: `docs/private-resources.md`.
 
 **API key actions.** Three are required — `applyBlueprint`, `listResources`, `deleteResource`
-— plus `listSiteResources` and `deleteSiteResource` to prune private resources, and
-`listSites`, `listClients` and `listUsers` for the name checks above. Every route is guarded by
+— plus `listSiteResources` and `deleteSiteResource` to prune private resources,
+`listSites`, `listClients` and `listUsers` for the name checks above, and
+`listResourceMtlsCertificates` to confirm an mTLS apply took effect. Every route is guarded by
 `verifyApiKeyHasAction`, so a key missing one returns 401/403 for that route alone. Together
 with pointing `--pangolin-endpoint` at the internal API rather than the Integration API, that
 is the most likely cause of an unexplained 401 — which is why `pangolin.AuthError` names both

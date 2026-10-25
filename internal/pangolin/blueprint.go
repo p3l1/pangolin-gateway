@@ -113,6 +113,10 @@ type Auth struct {
 	// removes the PIN. Pangolin takes a number, not a string.
 	Pincode *int `json:"pincode,omitempty"`
 
+	// Trusted client-certificate CAs. Sent on every apply so an empty list
+	// clears the stored set. Only an Enterprise/SaaS Pangolin enforces it.
+	MTLS *MTLS `json:"mtls,omitempty"`
+
 	// Omitted when unset: Pangolin leaves an absent setting untouched, so an
 	// empty list would revoke what its dashboard granted.
 	SSORoles []string `json:"sso-roles,omitempty"`
@@ -129,6 +133,14 @@ type BasicAuth struct {
 	// its login page rather than a challenge, which no non-browser client can
 	// act on. Pangolin skips the challenge anyway while SSO is on.
 	ExtendedCompatibility bool `json:"extendedCompatibility"`
+}
+
+// MTLS carries the trusted client-certificate CAs. Enabled with a non-empty
+// CACertificates set turns on the TLS-handshake check; enabled false with an
+// empty set clears it. CACertificates is never omitted, so the clear survives.
+type MTLS struct {
+	Enabled        bool     `json:"enabled"`
+	CACertificates []string `json:"ca-certificates"`
 }
 
 type Target struct {
