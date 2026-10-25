@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/p3l1/pangolin-gateway/compare/v0.8.0...v0.9.0) (2026-10-25)
+
+
+### Features
+
+* mTLS client-certificate access protection for public routes ([#40](https://github.com/p3l1/pangolin-gateway/issues/40)) ([3a91471](https://github.com/p3l1/pangolin-gateway/commit/3a91471d1213987774e00a5d198d80659f6a8533))
+
 ## [0.8.0](https://github.com/p3l1/pangolin-gateway/compare/v0.7.1...v0.8.0) (2026-10-20)
 
 
