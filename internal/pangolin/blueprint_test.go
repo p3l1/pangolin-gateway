@@ -105,6 +105,39 @@ func TestBlueprintOmitsUnsetOptionalFields(t *testing.T) {
 	}
 }
 
+// mTLS CA certificates ride inside auth.mtls. The empty array must survive
+// serialization so a disabled resource clears Pangolin's stored set rather than
+// leaving it untouched.
+func TestAuthMtlsMarshalsToPangolinKeys(t *testing.T) {
+	enabled, err := json.Marshal(Auth{MTLS: &MTLS{Enabled: true, CACertificates: []string{"PEM"}}})
+	if err != nil {
+		t.Fatalf("marshalling enabled auth: %v", err)
+	}
+	if !strings.Contains(string(enabled), `"mtls":{"enabled":true,"ca-certificates":["PEM"]}`) {
+		t.Errorf("enabled auth = %s, want mtls block with enabled and ca-certificates", enabled)
+	}
+
+	disabled, err := json.Marshal(Auth{MTLS: &MTLS{Enabled: false, CACertificates: []string{}}})
+	if err != nil {
+		t.Fatalf("marshalling disabled auth: %v", err)
+	}
+	if !strings.Contains(string(disabled), `"ca-certificates":[]`) {
+		t.Errorf("disabled auth = %s, want empty ca-certificates array present", disabled)
+	}
+
+	absent, err := json.Marshal(Auth{})
+	if err != nil {
+		t.Fatalf("marshalling auth without mtls: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(absent, &got); err != nil {
+		t.Fatalf("unmarshalling auth: %v", err)
+	}
+	if _, ok := got["mtls"]; ok {
+		t.Errorf("auth without mtls = %s, want no mtls key", absent)
+	}
+}
+
 func TestHealthcheckMarshalsToPangolinKeys(t *testing.T) {
 	bp := Blueprint{PublicResources: map[string]PublicResource{
 		"gw-demo-web": {
