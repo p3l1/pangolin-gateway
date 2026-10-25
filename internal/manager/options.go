@@ -36,12 +36,12 @@ func ControllerOptions(c Config) ctrl.Options {
 
 	return ctrl.Options{
 		Scheme: scheme,
-		// Secrets are read straight from the API server. A cached read would
-		// start an informer over every Secret in the cluster, which needs list
-		// and watch — far more than reading the one name a route derives.
+		// Secrets and ConfigMaps are read straight from the API server. A cached
+		// read would start an informer over every one in the cluster, which needs
+		// list and watch — far more than reading the one name a route points at.
 		Client: client.Options{
 			Cache: &client.CacheOptions{
-				DisableFor: []client.Object{&corev1.Secret{}},
+				DisableFor: []client.Object{&corev1.Secret{}, &corev1.ConfigMap{}},
 			},
 		},
 		Metrics:                metricsserver.Options{BindAddress: c.MetricsAddress},

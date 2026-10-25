@@ -140,6 +140,12 @@ func (p *Publisher) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result,
 	}
 	inputs.BasicAuth = basicAuth
 
+	mtls, err := p.resolveMTLS(ctx, gateway.ServedRoutes(inputs))
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolving mTLS CAs: %w", err)
+	}
+	inputs.MTLS = mtls
+
 	result := gateway.RenderAll(inputs)
 	blueprint, verdicts := result.Blueprint, result.Routes
 
