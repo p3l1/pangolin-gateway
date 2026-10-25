@@ -5,8 +5,12 @@
 package pangolinfake
 
 import (
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net"
 	"net/http"
@@ -14,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/p3l1/pangolin-gateway/internal/pangolin"
 )
@@ -39,6 +44,11 @@ type Fake struct {
 	nextPrivateID    int
 	privateDeleted   []int
 
+	// Trusted client-certificate CAs per resource niceId. mtlsStrip makes apply
+	// drop auth.mtls, reproducing an open-source Pangolin build.
+	mtlsCerts map[string][]pangolin.MtlsCertificate
+	mtlsStrip bool
+
 	failApply         int
 	failList          int
 	failPrivateList   int
@@ -57,6 +67,7 @@ func New() *Fake {
 		privateResources: map[string]pangolin.PrivateResource{},
 		privateIDs:       map[string]int{},
 		nextPrivateID:    1,
+		mtlsCerts:        map[string][]pangolin.MtlsCertificate{},
 		// A real organisation always has at least one site; tests that care name
 		// their own via AddSite.
 		sites:    []string{"test-site", "default-site"},
@@ -201,6 +212,17 @@ func (f *Fake) put(niceID string, r pangolin.PublicResource) int {
 	return id
 }
 
+// SetMtlsStrip makes apply drop auth.mtls, so tests can exercise the open-source
+// build where the field is silently stripped.
+func (f *Fake) SetMtlsStrip(on bool) { f.mu.Lock(); f.mtlsStrip = on; f.mu.Unlock() }
+
+// MtlsCertificates returns the trusted CA set stored for a resource niceId.
+func (f *Fake) MtlsCertificates(niceID string) []pangolin.MtlsCertificate {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.mtlsCerts[niceID]
+}
+
 func (f *Fake) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /v1/org/{orgId}/blueprint", f.handleApply)
@@ -209,12 +231,14 @@ func (f *Fake) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/org/{orgId}/sites", f.handleSites)
 	mux.HandleFunc("GET /v1/org/{orgId}/clients", f.handleMachines)
 	mux.HandleFunc("GET /v1/org/{orgId}/users", f.handleUsers)
+	mux.HandleFunc("GET /v1/public-resource/{id}/mtls/certificates", f.handleMtlsCertificates)
 	mux.HandleFunc("DELETE /v1/public-resource/{id}", f.handleDelete)
 	mux.HandleFunc("DELETE /v1/private-resource/{id}", f.handlePrivateDelete)
 
 	// Control plane for e2e, where the fake runs as a pod and the test cannot
 	// call the Go API directly.
 	mux.HandleFunc("POST /_control/fail", f.handleControlFail)
+	mux.HandleFunc("POST /_control/mtls-strip", f.handleControlMtlsStrip)
 	mux.HandleFunc("GET /_control/state", f.handleControlState)
 
 	return logRequests(mux)
@@ -383,10 +407,33 @@ func (f *Fake) handleApply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A bad CA (a private key, an unparseable cert, or more than 20) throws
+	// inside the transaction, so the whole document is rejected. An open-source
+	// build never parses them because the schema stripped the field.
+	mtlsByKey := map[string][]pangolin.MtlsCertificate{}
+	if !f.mtlsStrip {
+		for _, key := range sortedKeys(bp.PublicResources) {
+			res := bp.PublicResources[key]
+			if res.Auth == nil || res.Auth.MTLS == nil {
+				continue
+			}
+			certs, msg := parseMtlsCertificates(res.Auth.MTLS.CACertificates)
+			if msg != "" {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("%s (resource %s)", msg, key))
+				return
+			}
+			mtlsByKey[key] = certs
+		}
+	}
+
 	f.received = append(f.received, bp)
 	// Additive without prune: this is exactly the gap the controller exists to close.
 	for key, res := range bp.PublicResources {
 		f.put(key, res)
+	}
+	// Declarative replace: the stored set becomes exactly what was sent.
+	for key, certs := range mtlsByKey {
+		f.mtlsCerts[key] = certs
 	}
 	for key, res := range bp.PrivateResources {
 		f.putPrivate(key, res)
@@ -675,6 +722,37 @@ func (f *Fake) handlePrivateDelete(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotFound, "site resource not found")
 }
 
+func (f *Fake) handleMtlsCertificates(w http.ResponseWriter, r *http.Request) {
+	if !f.authorised(w, r) {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "resource id is not a number")
+		return
+	}
+	for niceID, known := range f.ids {
+		if known != id {
+			continue
+		}
+		certs := f.mtlsCerts[niceID]
+		if certs == nil {
+			certs = []pangolin.MtlsCertificate{}
+		}
+		writeOK(w, http.StatusOK, "ok", map[string]any{"certificates": certs})
+		return
+	}
+	writeError(w, http.StatusNotFound, "resource not found")
+}
+
+func (f *Fake) handleControlMtlsStrip(w http.ResponseWriter, r *http.Request) {
+	f.SetMtlsStrip(r.URL.Query().Get("enabled") == "true")
+	writeOK(w, http.StatusOK, "ok", nil)
+}
+
 func (f *Fake) handleControlFail(w http.ResponseWriter, r *http.Request) {
 	status, _ := strconv.Atoi(r.URL.Query().Get("status"))
 	switch r.URL.Query().Get("on") {
@@ -707,6 +785,7 @@ func (f *Fake) handleControlState(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, http.StatusOK, "ok", map[string]any{
 		"resources":        f.resources,
 		"privateResources": f.privateResources,
+		"mtlsCertificates": f.mtlsCerts,
 		"applies":          len(f.received),
 		"deleted":          f.deleted,
 		"privateDeleted":   f.privateDeleted,
@@ -748,6 +827,49 @@ func writeError(w http.ResponseWriter, status int, message string) {
 		"message": message,
 		"status":  status,
 	})
+}
+
+// parseMtlsCertificates mirrors how Pangolin ingests a trusted CA set: it splits
+// PEM bundles, rejects a private key or an unparseable cert, dedupes by SHA-256
+// fingerprint, and caps the set at 20. An empty message means it is valid.
+func parseMtlsCertificates(pems []string) ([]pangolin.MtlsCertificate, string) {
+	var out []pangolin.MtlsCertificate
+	seen := map[string]bool{}
+	for _, entry := range pems {
+		rest := []byte(entry)
+		for {
+			block, next := pem.Decode(rest)
+			if block == nil {
+				break
+			}
+			rest = next
+			if strings.Contains(block.Type, "PRIVATE KEY") {
+				return nil, "Upload the CA's public certificate only"
+			}
+			if block.Type != "CERTIFICATE" {
+				continue
+			}
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				return nil, "ca-certificate is not a valid certificate"
+			}
+			sum := sha256.Sum256(cert.Raw)
+			fp := hex.EncodeToString(sum[:])
+			if seen[fp] {
+				continue
+			}
+			seen[fp] = true
+			out = append(out, pangolin.MtlsCertificate{
+				Fingerprint: fp,
+				Subject:     cert.Subject.String(),
+				NotAfter:    cert.NotAfter.Format(time.RFC3339),
+			})
+		}
+	}
+	if len(out) > 20 {
+		return nil, "too many mTLS certificates (max 20)"
+	}
+	return out, ""
 }
 
 func sortStrings(s []string) {
