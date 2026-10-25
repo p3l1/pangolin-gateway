@@ -4,17 +4,21 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/p3l1/pangolin-gateway/internal/gateway"
+	"github.com/p3l1/pangolin-gateway/internal/pangolin"
 )
 
 // maxMtlsCertificates is the trusted-CA cap Pangolin enforces per resource. The
@@ -162,4 +166,110 @@ func validatedCA(raw string) gateway.MTLSResult {
 
 func mtlsRefused(format string, args ...any) gateway.MTLSResult {
 	return gateway.MTLSResult{Reason: fmt.Sprintf(format, args...)}
+}
+
+// verifyMTLS confirms, after a successful apply, that each published mTLS route's
+// trusted CA set actually took effect. A set that is empty, mismatched, or
+// unreadable flips that route alone to MtlsNotApplied, so the control is never
+// reported active when it is not — notably on an open-source build that strips
+// auth.mtls. It does not abort the pass or disturb other routes.
+func (p *Publisher) verifyMTLS(
+	ctx context.Context,
+	mtls map[types.NamespacedName]gateway.MTLSResult,
+	verdicts map[types.NamespacedName]gateway.Verdict,
+) {
+	want := map[types.NamespacedName]map[string]bool{}
+	for nn, v := range verdicts {
+		if !v.Published() {
+			continue
+		}
+		res, ok := mtls[nn]
+		if !ok || len(res.CACertificates) == 0 {
+			continue
+		}
+		fps := map[string]bool{}
+		for _, cert := range res.CACertificates {
+			if fp := fingerprintOf(cert); fp != "" {
+				fps[fp] = true
+			}
+		}
+		want[nn] = fps
+	}
+	if len(want) == 0 {
+		return
+	}
+
+	byNice, listErr := p.publicResourceIDs(ctx)
+	for nn := range want {
+		id, ok := byNice[verdicts[nn].Key]
+		if listErr != nil || !ok {
+			markMtlsNotApplied(verdicts, nn,
+				"could not confirm the mTLS CA was applied: the resource was not found in the listing")
+			continue
+		}
+		got, err := p.Pangolin.ListResourceMtlsCertificates(ctx, id)
+		if err != nil || !coversFingerprints(got, want[nn]) {
+			markMtlsNotApplied(verdicts, nn,
+				"the mTLS CA set did not take effect: the Pangolin build may not be Enterprise/SaaS, "+
+					"or the API key may lack the listResourceMtlsCertificates action")
+		}
+	}
+}
+
+func (p *Publisher) publicResourceIDs(ctx context.Context) (map[string]int, error) {
+	resources, err := p.Pangolin.ListPublicResources(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byNice := make(map[string]int, len(resources))
+	for _, r := range resources {
+		byNice[r.NiceID] = r.ResourceID
+	}
+	return byNice, nil
+}
+
+func markMtlsNotApplied(
+	verdicts map[types.NamespacedName]gateway.Verdict,
+	nn types.NamespacedName,
+	msg string,
+) {
+	v, ok := verdicts[nn]
+	if !ok || !v.Published() {
+		return
+	}
+	v.Accepted = gateway.ConditionResult{
+		Status:  metav1.ConditionFalse,
+		Reason:  gateway.ReasonMtlsNotApplied,
+		Message: msg,
+	}
+	verdicts[nn] = v
+}
+
+// coversFingerprints reports whether the instance holds every desired CA, by
+// SHA-256 fingerprint. Both sides are normalized so a colon-separated or
+// uppercase form from Pangolin still matches.
+func coversFingerprints(got []pangolin.MtlsCertificate, want map[string]bool) bool {
+	have := make(map[string]bool, len(got))
+	for _, c := range got {
+		have[normalizeFingerprint(c.Fingerprint)] = true
+	}
+	for fp := range want {
+		if !have[fp] {
+			return false
+		}
+	}
+	return true
+}
+
+func fingerprintOf(certPEM string) string {
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil || block.Type != "CERTIFICATE" {
+		return ""
+	}
+	sum := sha256.Sum256(block.Bytes)
+	return hex.EncodeToString(sum[:])
+}
+
+func normalizeFingerprint(s string) string {
+	return strings.ToLower(strings.NewReplacer(":", "", " ", "", "\t", "", "\n", "").Replace(s))
 }

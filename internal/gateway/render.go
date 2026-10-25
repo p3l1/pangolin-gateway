@@ -39,6 +39,7 @@ const (
 	ReasonUnknownSite       = "UnknownSite"
 	ReasonPublishFailed     = "PublishFailed"
 	ReasonDryRun            = "DryRun"
+	ReasonMtlsNotApplied    = "MtlsNotApplied"
 )
 
 type Inputs struct {

@@ -155,3 +155,64 @@ func TestReconcileRejectsMtlsWhenTwoSourcesSet(t *testing.T) {
 		t.Error("route with two CA sources was published")
 	}
 }
+
+func (h *harness) mtlsCASecret(t *testing.T, name string) {
+	t.Helper()
+	h.create(t, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: h.namespace, Name: name},
+		Data:       map[string][]byte{"ca.crt": []byte(mtlsCACert(t))},
+	})
+}
+
+func TestReconcileAcceptsMtlsWhenTheCaIsConfirmed(t *testing.T) {
+	h := newHarness(t)
+	h.setupClassAndGateway(t, "pangolin")
+	h.mtlsCASecret(t, "corp-ca")
+	h.mtlsRoute(t, "web", "web.example.com", map[string]string{gateway.AnnotationMTLSCASecret: "corp-ca"})
+
+	h.mustReconcile(t)
+
+	accepted := conditionOf(t, h.routeConditions(t, "web"), string(gatewayv1.RouteConditionAccepted))
+	if accepted.Status != metav1.ConditionTrue || accepted.Reason == gateway.ReasonMtlsNotApplied {
+		t.Errorf("accepted = %+v, want True and not MtlsNotApplied", accepted)
+	}
+}
+
+// On an open-source Pangolin the apply strips auth.mtls, so the verify read sees
+// an empty set; the route must report the control inactive, not success.
+func TestReconcileFlagsMtlsNotAppliedWhenStripped(t *testing.T) {
+	h := newHarness(t)
+	h.setupClassAndGateway(t, "pangolin")
+	h.fake.SetMtlsStrip(true)
+	h.mtlsCASecret(t, "corp-ca")
+	h.mtlsRoute(t, "web", "web.example.com", map[string]string{gateway.AnnotationMTLSCASecret: "corp-ca"})
+	h.create(t, h.newRoute("api", "api.example.com"))
+
+	h.mustReconcile(t)
+
+	web := conditionOf(t, h.routeConditions(t, "web"), string(gatewayv1.RouteConditionAccepted))
+	if web.Status != metav1.ConditionFalse || web.Reason != gateway.ReasonMtlsNotApplied {
+		t.Errorf("web accepted = %+v, want False/MtlsNotApplied", web)
+	}
+	// A verification failure is per-route; a plain route is unaffected.
+	api := conditionOf(t, h.routeConditions(t, "api"), string(gatewayv1.RouteConditionAccepted))
+	if api.Status != metav1.ConditionTrue {
+		t.Errorf("api accepted = %+v, want True", api)
+	}
+}
+
+func TestReconcileSkipsMtlsVerificationInDryRun(t *testing.T) {
+	h := newHarness(t)
+	h.publisher.DryRun = true
+	h.setupClassAndGateway(t, "pangolin")
+	h.fake.SetMtlsStrip(true)
+	h.mtlsCASecret(t, "corp-ca")
+	h.mtlsRoute(t, "web", "web.example.com", map[string]string{gateway.AnnotationMTLSCASecret: "corp-ca"})
+
+	h.mustReconcile(t)
+
+	accepted := conditionOf(t, h.routeConditions(t, "web"), string(gatewayv1.RouteConditionAccepted))
+	if accepted.Reason != gateway.ReasonDryRun {
+		t.Errorf("accepted = %+v, want DryRun with no verification", accepted)
+	}
+}

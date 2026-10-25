@@ -89,3 +89,12 @@ func TestValidatedCARejectsInputWithoutACertificate(t *testing.T) {
 		t.Error("input without a certificate was accepted")
 	}
 }
+
+func TestNormalizeFingerprint(t *testing.T) {
+	if normalizeFingerprint("AB:CD:EF") != normalizeFingerprint("abcdef") {
+		t.Error("a colon-separated uppercase fingerprint did not normalize to the plain hex")
+	}
+	if normalizeFingerprint(" ab:cd ") != "abcd" {
+		t.Errorf("normalizeFingerprint = %q, want abcd", normalizeFingerprint(" ab:cd "))
+	}
+}
