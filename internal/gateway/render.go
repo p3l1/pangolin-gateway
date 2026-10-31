@@ -75,6 +75,14 @@ type Inputs struct {
 	// checked like KnownSites, and a nil map disables the check the same way.
 	KnownMachines map[string]bool
 	KnownUsers    map[string]bool
+
+	// Licensed says the controller may use licensed Pangolin features. Without
+	// it no policy is rendered and no route may reference one.
+	Licensed bool
+
+	// ResourcePolicies are rendered into public-policies, where routes can
+	// reference them by name.
+	ResourcePolicies []v1alpha1.ResourcePolicy
 }
 
 // ConditionResult is one condition's outcome, without the bookkeeping fields
@@ -174,6 +182,7 @@ type Result struct {
 	Blueprint        pangolin.Blueprint
 	Routes           map[types.NamespacedName]Verdict
 	PrivateResources map[types.NamespacedName]ResourceVerdict
+	Policies         map[types.NamespacedName]ResourceVerdict
 }
 
 // Render turns the cluster's objects into the blueprint Pangolin should hold,
@@ -188,6 +197,8 @@ func Render(in Inputs) (pangolin.Blueprint, map[types.NamespacedName]Verdict) {
 func RenderAll(in Inputs) Result {
 	classes := servedClasses(in.GatewayClasses, in.ControllerName)
 	gateways := gatewaysByName(in.Gateways)
+
+	policyVerdicts, policyEntries := renderPolicies(in)
 
 	verdicts := make(map[types.NamespacedName]Verdict)
 	var candidates []candidate
@@ -215,7 +226,7 @@ func RenderAll(in Inputs) Result {
 			ParentRefs: served,
 		}
 
-		entry, cond := translate(r, in)
+		entry, cond := translate(r, in, policyVerdicts)
 		if cond != nil {
 			base.Accepted, base.ResolvedRefs = *cond, resolved()
 			if isRefReason(cond.Reason) {
@@ -261,6 +272,7 @@ func RenderAll(in Inputs) Result {
 	bp := pangolin.Blueprint{
 		PublicResources:  map[string]pangolin.PublicResource{},
 		PrivateResources: map[string]pangolin.PrivateResource{},
+		PublicPolicies:   policyEntries,
 	}
 	for c, o := range resolveCollisions(candidates, bp) {
 		switch c.kind {
@@ -280,7 +292,9 @@ func RenderAll(in Inputs) Result {
 			resources[c.name] = v
 		}
 	}
-	return Result{Blueprint: bp, Routes: verdicts, PrivateResources: resources}
+	return Result{
+		Blueprint: bp, Routes: verdicts, PrivateResources: resources, Policies: policyVerdicts,
+	}
 }
 
 // resolveCollisions awards each key and hostname to its oldest claimant. Order is
@@ -350,7 +364,11 @@ func firstClaimed(hostnames []string, owners map[string]claimant) (string, claim
 
 // translate validates one route and builds its blueprint entry. A non-nil
 // condition means the route is rejected and carries the reason why.
-func translate(r gatewayv1.HTTPRoute, in Inputs) (rendered, *ConditionResult) {
+func translate(
+	r gatewayv1.HTTPRoute,
+	in Inputs,
+	policies map[types.NamespacedName]ResourceVerdict,
+) (rendered, *ConditionResult) {
 	switch {
 	case len(r.Spec.Hostnames) == 0:
 		return fail(gatewayv1.RouteReasonUnsupportedValue,
@@ -442,7 +460,7 @@ func translate(r gatewayv1.HTTPRoute, in Inputs) (rendered, *ConditionResult) {
 		return entry, nil
 	}
 
-	resource, err := publicResource(r, in, name, host, site, backendHost, backendPort)
+	resource, err := publicResource(r, in, policies, name, host, site, backendHost, backendPort)
 	if err != nil {
 		return fail(gatewayv1.RouteReasonUnsupportedValue, "%s", err)
 	}
@@ -453,42 +471,24 @@ func translate(r gatewayv1.HTTPRoute, in Inputs) (rendered, *ConditionResult) {
 func publicResource(
 	r gatewayv1.HTTPRoute,
 	in Inputs,
+	policies map[types.NamespacedName]ResourceVerdict,
 	name, host, site, backendHost string,
 	backendPort int32,
 ) (*pangolin.PublicResource, error) {
-	sso, err := ssoFor(r)
+	policy, err := policyFor(r, in, policies)
 	if err != nil {
 		return nil, err
 	}
 
-	// Without sign-in there is nobody to authorise, so a grant would be a lie.
-	if !sso {
-		if err := refuseAnnotations(r,
-			"a public route with "+AnnotationSSO+`: "false"`,
-			"turn sign-in on or drop the grant",
-			AnnotationRoles, AnnotationUsers); err != nil {
-			return nil, err
-		}
+	var (
+		auth  *pangolin.Auth
+		rules pangolin.Rules
+	)
+	if policy != "" {
+		auth, err = sharedPolicyAuth(r, in)
+	} else {
+		auth, rules, err = inlineAuth(r, in)
 	}
-
-	roles, err := grantList(r, AnnotationRoles)
-	if err != nil {
-		return nil, err
-	}
-	users, err := grantList(r, AnnotationUsers)
-	if err != nil {
-		return nil, err
-	}
-
-	basicAuth, err := basicAuthFor(r, in)
-	if err != nil {
-		return nil, err
-	}
-	pincode, err := pincodeFor(r)
-	if err != nil {
-		return nil, err
-	}
-	mtls, err := mtlsFor(r, in)
 	if err != nil {
 		return nil, err
 	}
@@ -506,26 +506,75 @@ func publicResource(
 	}
 	target.Healthcheck = healthcheck
 
-	rules, err := rulesFor(r)
-	if err != nil {
-		return nil, err
-	}
-
 	return &pangolin.PublicResource{
 		Name:       name,
 		Mode:       pangolin.ModeHTTP,
 		FullDomain: host,
-		Auth: &pangolin.Auth{
-			SSOEnabled: sso,
-			BasicAuth:  basicAuth,
-			Pincode:    pincode,
-			MTLS:       mtls,
-			SSORoles:   roles,
-			SSOUsers:   users,
-		},
-		Targets: []pangolin.Target{target},
-		Rules:   rules,
+		Auth:       auth,
+		Policy:     policy,
+		Targets:    []pangolin.Target{target},
+		Rules:      rules,
 	}, nil
+}
+
+// inlineAuth builds the auth block and rules a route carries when no shared
+// policy decides for it.
+func inlineAuth(r gatewayv1.HTTPRoute, in Inputs) (*pangolin.Auth, pangolin.Rules, error) {
+	sso, err := ssoFor(r)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Without sign-in there is nobody to authorise, so a grant would be a lie.
+	if !sso {
+		if err := refuseAnnotations(r,
+			"a public route with "+AnnotationSSO+`: "false"`,
+			"turn sign-in on or drop the grant",
+			AnnotationRoles, AnnotationUsers); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	roles, err := grantList(r, AnnotationRoles)
+	if err != nil {
+		return nil, nil, err
+	}
+	users, err := grantList(r, AnnotationUsers)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	basicAuth, err := basicAuthFor(r, in)
+	if err != nil {
+		return nil, nil, err
+	}
+	pincode, err := pincodeFor(r)
+	if err != nil {
+		return nil, nil, err
+	}
+	whitelist, err := emailWhitelistFor(r)
+	if err != nil {
+		return nil, nil, err
+	}
+	mtls, err := mtlsFor(r, in)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	rules, err := rulesFor(r)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return &pangolin.Auth{
+		SSOEnabled:     sso,
+		BasicAuth:      basicAuth,
+		Pincode:        pincode,
+		MTLS:           mtls,
+		SSORoles:       roles,
+		SSOUsers:       users,
+		WhitelistUsers: whitelist,
+	}, rules, nil
 }
 
 func privateResource(
@@ -539,9 +588,14 @@ func privateResource(
 	// route says, so each is refused rather than ignored.
 	if err := refuseAnnotations(r, "a private route",
 		"access is granted by "+AnnotationRoles+" and "+AnnotationUsers,
-		append([]string{AnnotationSSO, AnnotationAccessRules, AnnotationBasicAuth, AnnotationPincode},
+		append([]string{AnnotationSSO, AnnotationAccessRules, AnnotationBasicAuth, AnnotationPincode,
+			AnnotationEmailWhitelist},
 			mtlsAnnotations...)...); err != nil {
 		return nil, nil, err
+	}
+	if strings.TrimSpace(r.Annotations[AnnotationPolicy]) != "" {
+		return nil, nil, fmt.Errorf("annotation %s has no meaning on a private route; "+
+			"access is granted by %s and %s", AnnotationPolicy, AnnotationRoles, AnnotationUsers)
 	}
 	if err := refuseAnnotations(r, "a private route",
 		"a private resource has no targets to check",

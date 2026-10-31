@@ -24,7 +24,7 @@ spec:
         - name: fake
           image: pangolin-fake:dev
           imagePullPolicy: IfNotPresent
-          args: ["--listen=:8080"]
+          args: ["--listen=:8080", "--licensed"]
           ports:
             - name: http
               containerPort: 8080

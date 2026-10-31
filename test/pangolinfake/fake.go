@@ -49,6 +49,16 @@ type Fake struct {
 	mtlsCerts map[string][]pangolin.MtlsCertificate
 	mtlsStrip bool
 
+	// Shared resource policies, a licensed feature: while licensed is false the
+	// policy routes answer 403 and an apply naming a policy is rejected.
+	licensed         bool
+	policies         map[string]pangolin.PublicPolicy
+	policyIDs        map[string]int
+	nextPolicyID     int
+	policyDeleted    []int
+	failPolicyList   int
+	failPolicyDelete int
+
 	failApply         int
 	failList          int
 	failPrivateList   int
@@ -68,6 +78,9 @@ func New() *Fake {
 		privateIDs:       map[string]int{},
 		nextPrivateID:    1,
 		mtlsCerts:        map[string][]pangolin.MtlsCertificate{},
+		policies:         map[string]pangolin.PublicPolicy{},
+		policyIDs:        map[string]int{},
+		nextPolicyID:     1,
 		// A real organisation always has at least one site; tests that care name
 		// their own via AddSite.
 		sites:    []string{"test-site", "default-site"},
@@ -97,6 +110,59 @@ func (f *Fake) FailPrivateDelete(status int) {
 
 func (f *Fake) FailMachines(status int) { f.mu.Lock(); f.failMachines = status; f.mu.Unlock() }
 func (f *Fake) FailUsers(status int)    { f.mu.Lock(); f.failUsers = status; f.mu.Unlock() }
+
+func (f *Fake) FailPolicyList(status int) {
+	f.mu.Lock()
+	f.failPolicyList = status
+	f.mu.Unlock()
+}
+
+func (f *Fake) FailPolicyDelete(status int) {
+	f.mu.Lock()
+	f.failPolicyDelete = status
+	f.mu.Unlock()
+}
+
+// SetLicensed makes the organisation hold a licence for shared policies.
+func (f *Fake) SetLicensed(on bool) { f.mu.Lock(); f.licensed = on; f.mu.Unlock() }
+
+// Policies returns the shared policies the instance currently holds.
+func (f *Fake) Policies() map[string]pangolin.PublicPolicy {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make(map[string]pangolin.PublicPolicy, len(f.policies))
+	for k, v := range f.policies {
+		out[k] = v
+	}
+	return out
+}
+
+// PolicyDeleted returns the resourcePolicyIds deleted so far, in order.
+func (f *Fake) PolicyDeleted() []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int(nil), f.policyDeleted...)
+}
+
+// SeedPolicy adds a policy as if an earlier apply had created it.
+func (f *Fake) SeedPolicy(niceID string, p pangolin.PublicPolicy) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.putPolicy(niceID, p)
+}
+
+// putPolicy assumes the lock is held.
+func (f *Fake) putPolicy(niceID string, p pangolin.PublicPolicy) int {
+	f.policies[niceID] = p
+	if id, ok := f.policyIDs[niceID]; ok {
+		return id
+	}
+	id := f.nextPolicyID
+	f.nextPolicyID++
+	f.policyIDs[niceID] = id
+	return id
+}
 
 // AddMachine makes a machine client niceId resolvable.
 func (f *Fake) AddMachine(niceID string) {
@@ -228,17 +294,20 @@ func (f *Fake) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/org/{orgId}/blueprint", f.handleApply)
 	mux.HandleFunc("GET /v1/org/{orgId}/public-resources", f.handleList)
 	mux.HandleFunc("GET /v1/org/{orgId}/private-resources", f.handlePrivateList)
+	mux.HandleFunc("GET /v1/org/{orgId}/resource-policies", f.handlePolicyList)
 	mux.HandleFunc("GET /v1/org/{orgId}/sites", f.handleSites)
 	mux.HandleFunc("GET /v1/org/{orgId}/clients", f.handleMachines)
 	mux.HandleFunc("GET /v1/org/{orgId}/users", f.handleUsers)
 	mux.HandleFunc("GET /v1/public-resource/{id}/mtls/certificates", f.handleMtlsCertificates)
 	mux.HandleFunc("DELETE /v1/public-resource/{id}", f.handleDelete)
 	mux.HandleFunc("DELETE /v1/private-resource/{id}", f.handlePrivateDelete)
+	mux.HandleFunc("DELETE /v1/resource-policy/{id}", f.handlePolicyDelete)
 
 	// Control plane for e2e, where the fake runs as a pod and the test cannot
 	// call the Go API directly.
 	mux.HandleFunc("POST /_control/fail", f.handleControlFail)
 	mux.HandleFunc("POST /_control/mtls-strip", f.handleControlMtlsStrip)
+	mux.HandleFunc("POST /_control/licensed", f.handleControlLicensed)
 	mux.HandleFunc("GET /_control/state", f.handleControlState)
 
 	return logRequests(mux)
@@ -361,6 +430,11 @@ func (f *Fake) handleApply(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if msg := f.checkPolicies(bp); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+
 	// An unknown site makes the real apply throw inside its transaction, so the
 	// whole document is rejected rather than partially applied.
 	for key, res := range bp.PublicResources {
@@ -437,6 +511,10 @@ func (f *Fake) handleApply(w http.ResponseWriter, r *http.Request) {
 	}
 	for key, res := range bp.PrivateResources {
 		f.putPrivate(key, res)
+	}
+	// Additive like the resources: an apply never deletes a policy.
+	for key, policy := range bp.PublicPolicies {
+		f.putPolicy(key, policy)
 	}
 	writeOK(w, http.StatusCreated, "Blueprint applied successfully", nil)
 }
@@ -540,6 +618,144 @@ func (f *Fake) handlePrivateList(w http.ResponseWriter, r *http.Request) {
 			"page":     page,
 		},
 	})
+}
+
+// checkPolicies mirrors what Pangolin throws for inside the apply transaction:
+// the licence check, the policy schema, and a resource naming a missing policy.
+// It assumes the lock is held.
+func (f *Fake) checkPolicies(bp pangolin.Blueprint) string {
+	const unlicensed = "Your current subscription does not support shared resource policies. " +
+		"Please upgrade to access this feature."
+
+	for _, key := range sortedKeys(bp.PublicPolicies) {
+		if !f.licensed {
+			return unlicensed
+		}
+		if msg := checkPolicySchema(bp.PublicPolicies[key]); msg != "" {
+			return fmt.Sprintf("%s (policy %s)", msg, key)
+		}
+	}
+	for _, key := range sortedKeys(bp.PublicResources) {
+		res := bp.PublicResources[key]
+		if res.Auth != nil {
+			for _, email := range res.Auth.WhitelistUsers {
+				if !validEmail(email) {
+					return fmt.Sprintf("Invalid email at \"public-resources.%s.auth.whitelist-users\" (%s)",
+						key, email)
+				}
+			}
+		}
+		if res.Policy == "" {
+			continue
+		}
+		if !f.licensed {
+			return unlicensed
+		}
+		if _, inDoc := bp.PublicPolicies[res.Policy]; !inDoc {
+			if _, stored := f.policies[res.Policy]; !stored {
+				return fmt.Sprintf("Resource policy not found: %s (resource %s)", res.Policy, key)
+			}
+		}
+	}
+	return ""
+}
+
+func (f *Fake) handlePolicyList(w http.ResponseWriter, r *http.Request) {
+	if !f.authorised(w, r) {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if !f.licensed {
+		writeError(w, http.StatusForbidden, "this feature requires a license")
+		return
+	}
+	if status := f.failPolicyList; status != 0 {
+		writeError(w, status, "policy listing failed on request")
+		return
+	}
+
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	size, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
+	if size < 1 {
+		size = 20
+	}
+
+	rows := make([]map[string]any, 0, len(f.policies))
+	for _, niceID := range sortedKeys(f.policies) {
+		rows = append(rows, map[string]any{
+			"resourcePolicyId": f.policyIDs[niceID],
+			"name":             f.policies[niceID].Name,
+			"niceId":           niceID,
+			"orgId":            "test-org",
+			"resources":        []any{},
+		})
+	}
+
+	start := min((page-1)*size, len(rows))
+	end := min(start+size, len(rows))
+
+	writeOK(w, http.StatusOK, "Resource policies retrieved successfully", map[string]any{
+		"policies": rows[start:end],
+		"pagination": map[string]int{
+			"total":    len(rows),
+			"pageSize": size,
+			"page":     page,
+		},
+	})
+}
+
+// handlePolicyDelete refuses while a resource still names the policy, as
+// Pangolin does.
+func (f *Fake) handlePolicyDelete(w http.ResponseWriter, r *http.Request) {
+	if !f.authorised(w, r) {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if !f.licensed {
+		writeError(w, http.StatusForbidden, "this feature requires a license")
+		return
+	}
+	if status := f.failPolicyDelete; status != 0 {
+		writeError(w, status, "policy delete failed on request")
+		return
+	}
+
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "resource policy id is not a number")
+		return
+	}
+
+	for niceID, known := range f.policyIDs {
+		if known != id {
+			continue
+		}
+		for _, key := range sortedKeys(f.resources) {
+			if f.resources[key].Policy == niceID {
+				writeError(w, http.StatusConflict,
+					"Cannot delete a resource policy that is still used by resource "+key)
+				return
+			}
+		}
+		delete(f.policies, niceID)
+		delete(f.policyIDs, niceID)
+		f.policyDeleted = append(f.policyDeleted, id)
+		writeOK(w, http.StatusOK, "Resource policy deleted successfully", nil)
+		return
+	}
+	writeError(w, http.StatusNotFound, "resource policy not found")
+}
+
+func (f *Fake) handleControlLicensed(w http.ResponseWriter, r *http.Request) {
+	f.SetLicensed(r.URL.Query().Get("enabled") == "true")
+	writeOK(w, http.StatusOK, "ok", nil)
 }
 
 func (f *Fake) handleSites(w http.ResponseWriter, r *http.Request) {
@@ -766,13 +982,17 @@ func (f *Fake) handleControlFail(w http.ResponseWriter, r *http.Request) {
 		f.FailPrivateList(status)
 	case "private-delete":
 		f.FailPrivateDelete(status)
+	case "policy-list":
+		f.FailPolicyList(status)
+	case "policy-delete":
+		f.FailPolicyDelete(status)
 	case "machines":
 		f.FailMachines(status)
 	case "users":
 		f.FailUsers(status)
 	default:
 		writeError(w, http.StatusBadRequest,
-			"on must be apply, list, delete, private-list, private-delete, machines or users")
+			"on must be apply, list, delete, private-list, private-delete, policy-list, policy-delete, machines or users")
 		return
 	}
 	writeOK(w, http.StatusOK, "ok", nil)
@@ -785,6 +1005,8 @@ func (f *Fake) handleControlState(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, http.StatusOK, "ok", map[string]any{
 		"resources":        f.resources,
 		"privateResources": f.privateResources,
+		"publicPolicies":   f.policies,
+		"policyDeleted":    f.policyDeleted,
 		"mtlsCertificates": f.mtlsCerts,
 		"applies":          len(f.received),
 		"deleted":          f.deleted,
@@ -1076,4 +1298,39 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sortStrings(keys)
 	return keys
+}
+
+// zod's email pattern has two lookaheads, expressed here as prefix and substring
+// checks. The wildcard form is the one a policy whitelist adds.
+var (
+	emailPattern = regexp.MustCompile(
+		`^[A-Za-z0-9_'+\-.]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9-]*\.)+[A-Za-z]{2,}$`)
+	wildcardEmailPattern = regexp.MustCompile(`^\*@[\w.-]+\.[a-zA-Z]{2,}$`)
+	pincodePattern       = regexp.MustCompile(`^\d{6}$`)
+)
+
+func validEmail(s string) bool {
+	return !strings.HasPrefix(s, ".") && !strings.Contains(s, "..") && emailPattern.MatchString(s)
+}
+
+// checkPolicySchema mirrors ResourcePolicySchema's refinements and returns its
+// complaint, or "" when the policy passes.
+func checkPolicySchema(p pangolin.PublicPolicy) string {
+	switch {
+	case p.Name == "" || len(p.Name) > 255:
+		return "Too small: expected string to have >=1 characters at \"name\""
+	case p.Pincode != "" && !pincodePattern.MatchString(p.Pincode):
+		return "Invalid string: must match pattern /^\\d{6}$/ at \"pincode\""
+	}
+	for _, role := range p.SSORoles {
+		if role == "Admin" {
+			return "Admin role cannot be included in sso-roles"
+		}
+	}
+	for _, entry := range p.WhitelistUsers {
+		if !validEmail(entry) && !wildcardEmailPattern.MatchString(entry) {
+			return "Invalid email or domain wildcard at \"whitelist-users\": " + entry
+		}
+	}
+	return checkRules(p.Rules)
 }

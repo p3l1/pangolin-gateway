@@ -35,6 +35,8 @@ func main() {
 			"site niceId used for routes without the "+"pangolin.p3l1.de/site"+" annotation")
 		dryRun = flag.Bool("dry-run", false,
 			"log every write to Pangolin instead of performing it")
+		licensed = flag.Bool("pangolin-licensed", false,
+			"use licensed Pangolin features: ResourcePolicy objects and the policy annotation")
 		resync = flag.Duration("resync-interval", controller.DefaultResyncInterval,
 			"how often to reconcile without a cluster event, repairing drift on the Pangolin side")
 	)
@@ -93,6 +95,7 @@ func main() {
 		DefaultSite:    *defaultSite,
 		ResyncInterval: *resync,
 		DryRun:         *dryRun,
+		Licensed:       *licensed,
 	}
 	if err := publisher.SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to create controller", "controller", "pangolin-publisher")
@@ -104,6 +107,7 @@ func main() {
 		"org", *org,
 		"defaultSite", *defaultSite,
 		"dryRun", *dryRun,
+		"licensed", *licensed,
 		"resyncInterval", time.Duration(*resync).String(),
 		"controllerName", manager.ControllerName)
 

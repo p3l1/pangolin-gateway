@@ -1,7 +1,7 @@
 # Repository guide
 
 A Kubernetes controller publishing Gateway API `HTTPRoute`s, and its own `PrivateResource`
-objects, as resources in a Pangolin instance. Go, controller-runtime, Helm.
+and `ResourcePolicy` objects, as resources in a Pangolin instance. Go, controller-runtime, Helm.
 
 ## Commands
 
@@ -27,7 +27,7 @@ These are hard constraints, not preferences:
 
 ## Layout
 
-- `api/v1alpha1/` — the `PrivateResource` kind (`pangolin.p3l1.de`). `zz_generated.deepcopy.go`
+- `api/v1alpha1/` — the `PrivateResource` and `ResourcePolicy` kinds (`pangolin.p3l1.de`). `zz_generated.deepcopy.go`
   is generated; never edit it by hand.
 - `cmd/main.go` — process entry point; wires flags into `manager.Config` and the Pangolin
   client, then starts the controller-runtime manager.
@@ -36,12 +36,13 @@ These are hard constraints, not preferences:
   `pangolin.p3l1.de/` annotations are declared where they are parsed: sso, site and
   display-name at the top of `render.go`, the healthcheck in `healthcheck.go`, access rules
   in `rules.go`, visibility and grants in `visibility.go`, basic auth in `basicauth.go`, the PIN in
-  `pincode.go`, mTLS CA sources in `mtls.go`.
+  `pincode.go`, the e-mail whitelist in `emailwhitelist.go`, mTLS CA sources in `mtls.go`.
   Credentials are resolved before the render, by `internal/controller/basicauth.go`, and
   handed in through `Inputs.BasicAuth` so the renderer stays pure. `privateresource.go`
   translates a `PrivateResource`; `RenderAll` returns verdicts for both kinds, and both
-  compete in one collision check.
-- `internal/pangolin/` — the Integration API client behind an eight-method interface, the
+  compete in one collision check. `policy.go` translates a `ResourcePolicy` and resolves a
+  route's `policy` reference; `Inputs.Licensed` gates both.
+- `internal/pangolin/` — the Integration API client behind a ten-method interface, the
   blueprint types, and the dry-run decorator.
 - `internal/controller/publisher.go` — the single reconciler, plus its metrics.
 - `internal/manager/` — manager assembly (`Config`, `ControllerOptions`), the leader-election
@@ -56,7 +57,8 @@ These are hard constraints, not preferences:
 - `test/envtestenv/` — the importable envtest harness (`Start`). Controller tests live beside
   their controller under `internal/controller/` and run in the medium tier (`just test`).
 
-This project defines **one CRD**, `privateresources.pangolin.p3l1.de`, generated from
+This project defines **two CRDs**, `privateresources` and `resourcepolicies`
+(`.pangolin.p3l1.de`), generated from
 `api/v1alpha1` by `just generate` (deepcopy, CRD, RBAC). The chart ships it as a template —
 not in `crds/`, which Helm never upgrades — annotated `helm.sh/resource-policy: keep` unless
 `crds.keep=false`. envtest loads it from `config/crd/bases`. The Gateway API types come from
@@ -79,17 +81,17 @@ cache by `just gateway-crds` — so the schemas under test are always the ones `
 
 ## How the controller works
 
-**One reconciler on a fixed key.** All four watches — HTTPRoute, Gateway, GatewayClass,
-PrivateResource — map to the same request, so the workqueue coalesces a burst into one pass
+**One reconciler on a fixed key.** All five watches — HTTPRoute, Gateway, GatewayClass,
+PrivateResource, ResourcePolicy — map to the same request, so the workqueue coalesces a burst into one pass
 and the whole desired state goes out in a single apply. Watches carry a `GenerationChanged OR AnnotationChanged`
 predicate: a status write is itself a watch event, and status writes do not bump generation,
 so without this the controller loops against itself.
 
-**A pass is:** read all four kinds (any read error aborts before anything is written) →
+**A pass is:** read all five kinds (any read error aborts before anything is written) →
 render → apply → prune → write status. The prune runs once per blueprint section, each
-against its own listing. The prune runs only after a successful apply and a
+against its own listing; policies come last and only with `--pangolin-licensed`. The prune runs only after a successful apply and a
 complete listing, and deletes only resources whose niceId starts with `gw-`. Routes are keyed
-`gw-<ns>-<name>`, PrivateResources `gw-pr-<ns>-<name>`.
+`gw-<ns>-<name>`, PrivateResources `gw-pr-<ns>-<name>`, ResourcePolicies `gw-<ns>-<name>` in their own table.
 
 **No finalizer.** A deleted route is simply absent from the next render and the prune removes
 its resource. A finalizer would block namespace deletion whenever the controller is down.
@@ -97,7 +99,7 @@ its resource. A finalizer would block namespace deletion whenever the controller
 **Status is per parentRef.** An HTTPRoute's conditions live in `status.parents[]`, each entry
 keyed by parentRef and `controllerName`. Only entries carrying `p3l1.de/pangolin` may be
 touched; others belong to other controllers. `SetRouteStatus` returns whether anything
-changed, and the caller must skip the write when it did not. A PrivateResource has plain
+changed, and the caller must skip the write when it did not. A PrivateResource and a ResourcePolicy have plain
 `status.conditions` — `Accepted` from the renderer, `Programmed` from the apply's outcome —
 and the same skip-when-unchanged rule.
 
@@ -156,10 +158,19 @@ the docs:
   the way sites are. An absent `tcp-ports`/`udp-ports` means every port, so host and cidr
   always send both. Aliases are unique per organisation. Rationale: `docs/private-resources.md`.
 
+- `public-policies` is a licensed section: an unlicensed organisation fails the whole apply
+  for it, and for a resource carrying `policy`. Pangolin never deletes a policy on apply, and
+  refuses `DELETE /resource-policy/{id}` while a resource names it. A resource with `policy`
+  uses only the policy for sign-in, whitelist and rules, but falls back to its own pincode,
+  password and header auth, so the renderer sends it none. The inline `whitelist-users` takes
+  zod `email` only; the wildcard form exists in a policy alone. A policy's `pincode` is a
+  string, unlike the number on a resource.
+
 **API key actions.** Three are required — `applyBlueprint`, `listResources`, `deleteResource`
 — plus `listSiteResources` and `deleteSiteResource` to prune private resources,
 `listSites`, `listClients` and `listUsers` for the name checks above, and
-`listResourceMtlsCertificates` to confirm an mTLS apply took effect. Every route is guarded by
+`listResourceMtlsCertificates` to confirm an mTLS apply took effect, and
+`listResourcePolicies` plus `deleteResourcePolicy` to prune policies when licensed. Every route is guarded by
 `verifyApiKeyHasAction`, so a key missing one returns 401/403 for that route alone. Together
 with pointing `--pangolin-endpoint` at the internal API rather than the Integration API, that
 is the most likely cause of an unexplained 401 — which is why `pangolin.AuthError` names both

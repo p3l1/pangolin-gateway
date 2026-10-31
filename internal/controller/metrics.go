@@ -13,6 +13,9 @@ import (
 const (
 	visibilityPublic  = "public"
 	visibilityPrivate = "private"
+
+	// Shared policies are a third listing, with their own deletion.
+	visibilityPolicy = "policy"
 )
 
 var (
@@ -47,9 +50,14 @@ var (
 	})
 )
 
+var policiesRejected = prometheus.NewGauge(prometheus.GaugeOpts{
+	Name: "pangolin_gateway_resource_policies_rejected",
+	Help: "ResourcePolicies the renderer refused to publish.",
+})
+
 func init() {
 	metrics.Registry.MustRegister(
 		publishTotal, pruneTotal, pruneSkippedTotal, resourcesDesired, routesRejected,
-		privateResourcesRejected,
+		privateResourcesRejected, policiesRejected,
 	)
 }

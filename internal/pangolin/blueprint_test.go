@@ -529,3 +529,110 @@ func TestBlueprintMarshalsGrantsInTheAuthBlock(t *testing.T) {
 		}
 	}
 }
+
+func marshalled(t *testing.T, bp Blueprint) map[string]any {
+	t.Helper()
+
+	raw, err := json.Marshal(bp)
+	if err != nil {
+		t.Fatalf("marshalling blueprint: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshalling blueprint: %v", err)
+	}
+	return got
+}
+
+func TestBlueprintOmitsPublicPoliciesWhileThereAreNone(t *testing.T) {
+	got := marshalled(t, Blueprint{PublicPolicies: map[string]PublicPolicy{}})
+
+	if _, set := got["public-policies"]; set {
+		t.Error("public-policies is sent without a policy; an unlicensed organisation rejects the key")
+	}
+}
+
+func TestPublicPolicyMarshalsToPangolinKeys(t *testing.T) {
+	got := marshalled(t, Blueprint{PublicPolicies: map[string]PublicPolicy{
+		"gw-demo-choir": {
+			Name:                  "demo/choir",
+			SSO:                   false,
+			SSORoles:              []string{"Member"},
+			Pincode:               "012345",
+			EmailWhitelistEnabled: true,
+			WhitelistUsers:        []string{"anna@example.com", "*@plan-b-chor.de"},
+			ApplyRules:            true,
+			Rules:                 Rules{{Action: ActionAllow, Match: MatchPath, Value: "/public/*"}},
+		},
+	}})
+
+	policy := got["public-policies"].(map[string]any)["gw-demo-choir"].(map[string]any)
+	if policy["pincode"] != "012345" {
+		t.Errorf("pincode = %#v, want the string \"012345\"", policy["pincode"])
+	}
+	for key, want := range map[string]any{
+		"name": "demo/choir", "sso": false, "email-whitelist-enabled": true, "apply-rules": true,
+	} {
+		if policy[key] != want {
+			t.Errorf("policy[%q] = %#v, want %#v", key, policy[key], want)
+		}
+	}
+	whitelist, _ := policy["whitelist-users"].([]any)
+	if len(whitelist) != 2 || whitelist[1] != "*@plan-b-chor.de" {
+		t.Errorf("whitelist-users = %v", policy["whitelist-users"])
+	}
+	if rules, _ := policy["rules"].([]any); len(rules) != 1 {
+		t.Errorf("rules = %v, want one", policy["rules"])
+	}
+}
+
+// Both flags default to false in Pangolin's schema, and an empty rules array
+// is how evaluation is switched off.
+func TestPublicPolicySendsItsFlagsAndRulesWhenEmpty(t *testing.T) {
+	got := marshalled(t, Blueprint{PublicPolicies: map[string]PublicPolicy{
+		"gw-demo-bare": {Name: "demo/bare", SSO: true},
+	}})
+
+	policy := got["public-policies"].(map[string]any)["gw-demo-bare"].(map[string]any)
+	for _, key := range []string{"email-whitelist-enabled", "apply-rules", "rules", "sso"} {
+		if _, set := policy[key]; !set {
+			t.Errorf("policy[%q] is omitted", key)
+		}
+	}
+	if rules, ok := policy["rules"].([]any); !ok || len(rules) != 0 {
+		t.Errorf("rules = %#v, want []", policy["rules"])
+	}
+	for _, key := range []string{"pincode", "whitelist-users", "sso-roles", "sso-users"} {
+		if _, set := policy[key]; set {
+			t.Errorf("policy[%q] is sent while empty", key)
+		}
+	}
+}
+
+func TestPublicResourceMarshalsItsPolicyAndWhitelist(t *testing.T) {
+	got := marshalled(t, Blueprint{PublicResources: map[string]PublicResource{
+		"gw-demo-web": {
+			Name: "demo/web", Mode: ModeHTTP, Policy: "gw-demo-choir",
+			Auth: &Auth{WhitelistUsers: []string{"anna@example.com"}},
+		},
+		"gw-demo-plain": {Name: "demo/plain", Mode: ModeHTTP, Auth: &Auth{}},
+	}})
+
+	resources := got["public-resources"].(map[string]any)
+	web := resources["gw-demo-web"].(map[string]any)
+	if web["policy"] != "gw-demo-choir" {
+		t.Errorf("policy = %#v, want gw-demo-choir", web["policy"])
+	}
+	auth := web["auth"].(map[string]any)
+	if list, _ := auth["whitelist-users"].([]any); len(list) != 1 {
+		t.Errorf("whitelist-users = %v, want one entry", auth["whitelist-users"])
+	}
+
+	plain := resources["gw-demo-plain"].(map[string]any)
+	if _, set := plain["policy"]; set {
+		t.Error("policy is sent on a resource without one")
+	}
+	if _, set := plain["auth"].(map[string]any)["whitelist-users"]; set {
+		t.Error("whitelist-users is sent while empty")
+	}
+}

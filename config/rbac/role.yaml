@@ -48,6 +48,7 @@ rules:
   - pangolin.p3l1.de
   resources:
   - privateresources
+  - resourcepolicies
   verbs:
   - get
   - list
@@ -56,6 +57,7 @@ rules:
   - pangolin.p3l1.de
   resources:
   - privateresources/status
+  - resourcepolicies/status
   verbs:
   - get
   - patch

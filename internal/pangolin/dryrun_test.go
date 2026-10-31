@@ -43,6 +43,15 @@ func (c *recordingClient) ListPublicResources(context.Context) ([]Resource, erro
 	return []Resource{{ResourceID: 1, NiceID: "gw-demo-web"}}, nil
 }
 
+func (c *recordingClient) ListResourcePolicies(context.Context) ([]Resource, error) {
+	return []Resource{{ResourceID: 3, NiceID: "gw-demo-choir"}}, nil
+}
+
+func (c *recordingClient) DeleteResourcePolicy(context.Context, int) error {
+	c.t.Error("DeleteResourcePolicy reached the inner client during a dry run")
+	return nil
+}
+
 func (c *recordingClient) ListSites(context.Context) ([]Site, error) {
 	return []Site{{NiceID: "test-site"}}, nil
 }
@@ -75,6 +84,9 @@ func TestDryRunLetsNoWriteThrough(t *testing.T) {
 	}
 	if err := d.DeletePrivateResource(ctx, 7); err != nil {
 		t.Errorf("DeletePrivateResource returned %v, want nil", err)
+	}
+	if err := d.DeleteResourcePolicy(ctx, 3); err != nil {
+		t.Errorf("DeleteResourcePolicy returned %v, want nil", err)
 	}
 }
 
@@ -125,6 +137,15 @@ func TestDryRunStillListsGrantees(t *testing.T) {
 	users, err := d.ListUsers(context.Background())
 	if err != nil || len(users) != 1 || users[0].Username != "alice" {
 		t.Errorf("ListUsers = %+v, %v; want the inner client's row", users, err)
+	}
+}
+
+func TestDryRunStillListsPolicies(t *testing.T) {
+	d := NewDryRun(&recordingClient{t: t}, logr.Discard())
+
+	got, err := d.ListResourcePolicies(context.Background())
+	if err != nil || len(got) != 1 || got[0].NiceID != "gw-demo-choir" {
+		t.Errorf("ListResourcePolicies = %+v, %v; want the inner client's row", got, err)
 	}
 }
 

@@ -238,6 +238,7 @@ deploy: images-local cluster-up
         --set pangolin.endpoint=http://pangolin-fake.{{namespace}}.svc.cluster.local:8080/v1 \
         --set pangolin.org=test-org \
         --set pangolin.defaultSite=test-site \
+        --set pangolin.licensed=true \
         --set pangolin.apiKeySecret.name=pangolin-api-key \
         --set-string podAnnotations.deployedAt="$stamp" \
         --wait --timeout 3m
