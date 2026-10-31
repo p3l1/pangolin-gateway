@@ -38,7 +38,7 @@ removes it; a finalizer would block namespace deletion whenever the controller i
   works on any build
 - An Integration API key of the form `<key_id>.<key_secret>`
 - The Gateway API CRDs installed in the cluster. The chart installs the controller's own
-  `PrivateResource` CRD.
+  `PrivateResource` and `ResourcePolicy` CRDs.
 
 **The API key needs three actions**: `applyBlueprint`, `listResources` and `deleteResource`.
 A key missing one returns 401 or 403 for that operation alone, which looks exactly like a bad
@@ -64,6 +64,11 @@ apply the controller reads the resource's trusted CA set back to confirm it took
 key without the action, or a non-Enterprise build, makes that check fail and the route reports
 `MtlsNotApplied` rather than a client-certificate requirement that is silently off.
 
+`listResourcePolicies` and `deleteResourcePolicy` are needed only with
+`pangolin.licensed` (see [Shared policies](#shared-policies-resourcepolicy)). They guard a
+licensed pair of endpoints; the prune lists the policies and deletes the `gw-` ones no
+`ResourcePolicy` claims any more.
+
 ## Installing
 
 The chart never creates a Secret. Supply the key yourself:
@@ -85,14 +90,17 @@ helm install pangolin-gateway oci://ghcr.io/p3l1/charts/pangolin-gateway \
 Cloud serves `/v1`, self-hosted deployments usually `/api/v1`. Pointing it at the internal
 API instead — the one on port 3000 — makes every call fail with an opaque 401.
 
-The chart installs the `PrivateResource` CRD as an ordinary template, so `helm upgrade`
-updates it too. It is annotated `helm.sh/resource-policy: keep`: uninstalling the release
-leaves it, and with it every `PrivateResource`, in place. `crds.keep=false` drops the
-annotation; `crds.install=false` leaves installing the CRD to you — the controller does not
-start without it.
+The chart installs the `PrivateResource` and `ResourcePolicy` CRDs as ordinary templates, so
+`helm upgrade` updates them too. They are annotated `helm.sh/resource-policy: keep`:
+uninstalling the release leaves them, and with them every object of those kinds, in place. `crds.keep=false` drops the
+annotation; `crds.install=false` leaves installing the CRDs to you — the controller does not
+start without them.
 
 Start with `--set pangolin.dryRun=true`. In that mode every write is logged and none is
 performed, which is the safe way to see what a first real pass would do.
+
+Add `--set pangolin.licensed=true` only when the organisation holds the licence for shared
+policies; see [Shared policies](#shared-policies-resourcepolicy).
 
 ## Using it
 
@@ -382,6 +390,96 @@ Pangolin refuses unpublishes every other route along with it.
 A private route carrying the annotation is rejected: a private resource has no
 sign-in page to ask on.
 
+## E-mail whitelist
+
+A public resource can let specific people in by e-mail address, with a one-time code
+sent to them, without a Pangolin account:
+
+```yaml
+metadata:
+  annotations:
+    pangolin.p3l1.de/email-whitelist: "anna@example.com, bob@example.org"
+```
+
+Entries are separated by commas or whitespace, lowercased, and deduplicated. The whitelist
+sits **beside** SSO like the [PIN](#pin): the `sso` annotation decides whether the login is
+on, and either way lets a listed address through. Access rules still run first.
+
+An empty value means no whitelist, and removing the annotation removes it on the next pass:
+Pangolin replaces the list on every apply.
+
+An entry has to pass the same check as Pangolin's own schema, or the controller rejects
+the route instead of sending it, because one bad address makes Pangolin refuse the whole
+apply. A wildcard such as `*@example.com` is rejected here with a pointer to
+[Shared policies](#shared-policies-resourcepolicy): only a policy can hold one. A private
+route carrying the annotation is rejected too.
+
+## Shared policies (`ResourcePolicy`)
+
+Shared resource policies are a **licensed** Pangolin feature (Enterprise or SaaS tier).
+The controller leaves them alone unless it is told the organisation holds the licence:
+
+```yaml
+# values.yaml
+pangolin:
+  licensed: true   # renders --pangolin-licensed
+```
+
+With the flag off, which is the default, the controller never calls the policy endpoints and
+never sends `public-policies` or `policy:`. Every `ResourcePolicy` reports
+`Accepted: False`, `NotLicensed`, and a route referencing one is rejected. Sending either to an
+unlicensed organisation would make Pangolin refuse the whole apply.
+
+A `ResourcePolicy` is a namespaced object that becomes one entry under `public-policies`.
+Its niceId is `gw-<namespace>-<name>`:
+
+```yaml
+apiVersion: pangolin.p3l1.de/v1alpha1
+kind: ResourcePolicy
+metadata:
+  name: choir
+  namespace: demo
+spec:
+  displayName: Choir members
+  roles: [Member]
+  emailWhitelist:
+    - anna@example.com
+    - "*@plan-b-chor.de"
+  pincode: "012345"
+```
+
+| Field | Meaning |
+|---|---|
+| `displayName` | Name in the dashboard; defaults to `<namespace>/<name>` |
+| `sso` | Require a Pangolin login; default `true` |
+| `roles`, `users` | Who may sign in; `Admin` is refused, and neither is meaningful with `sso: false` |
+| `emailWhitelist` | Exact addresses and `*@domain` wildcards, lowercased |
+| `pincode` | Six digits, leading zeros allowed |
+| `rules` | `action`, `match`, `value` as for [access rules](#access-rules), in priority order |
+
+A route opts in by naming the policy, in its own namespace:
+
+```yaml
+metadata:
+  annotations:
+    pangolin.p3l1.de/policy: choir
+```
+
+The route is then in Pangolin's shared policy mode: sign-in, whitelist, PIN and rules come
+from the policy alone. Pangolin falls back to a resource's own PIN, password and header
+auth when the policy has none, so the controller sends a resource with sign-in off and
+nothing else. For the same reason the route may not also carry `sso`, `pincode`,
+`basic-auth`, `access-rules`, `roles`, `users`, `email-whitelist` or any mTLS annotation; it is
+rejected, naming the first one, rather than published with a second opinion. A route is
+also rejected when the controller is not licensed, when the policy does not exist or is not
+accepted, and when the route is private. Removing the annotation returns the route to its
+own inline settings.
+
+Pangolin never deletes a policy on apply. After a successful apply the controller lists
+the policies and deletes the `gw-` ones no `ResourcePolicy` claims, after the resource
+prune so a policy a route just left is free to go. A refused delete is logged and retried
+on the next pass without failing it. Without `--pangolin-licensed` the listing is skipped.
+
 ## mTLS
 
 A public resource can require a client certificate during the TLS handshake. The
@@ -551,6 +649,8 @@ route, cross-namespace backends via ReferenceGrant, and listener/`allowedRoutes`
 | Annotation the chosen visibility cannot honour | `Accepted: False`, `UnsupportedValue` |
 | Basic auth asked for, credentials unavailable | `Accepted: False`, `UnsupportedValue` |
 | PIN that is not six digits from 100000 | `Accepted: False`, `UnsupportedValue` |
+| Malformed `email-whitelist`, or a wildcard in it | `Accepted: False`, `UnsupportedValue` |
+| `policy` while unlicensed, unknown or unaccepted, on a private route, or beside an access annotation | `Accepted: False`, `UnsupportedValue` |
 | mTLS CA unreadable, absent, a private key, or over 20 | `Accepted: False`, `UnsupportedValue` |
 | mTLS CA did not take effect (non-Enterprise build, or missing action) | `Accepted: False`, `MtlsNotApplied` |
 | parentRef names no existing Gateway | `Accepted: False`, `NoMatchingParent` |
@@ -572,6 +672,18 @@ niceId in `status.resourceKey` while it is published:
 | Key, hostname or alias claimed by an older object | `Accepted: False`, `DuplicateResourceKey` / `DuplicateHostname` |
 
 `kubectl get privateresources` (short name `ppr`) shows both conditions.
+
+A `ResourcePolicy` carries the same two conditions and its niceId in `status.policyKey`:
+
+| Situation | Condition |
+|---|---|
+| Published | `Accepted: True`, `Programmed: True` |
+| Controller not run with `--pangolin-licensed` | `Accepted: False`, `NotLicensed` |
+| Invalid name, role, PIN, e-mail entry or rule | `Accepted: False`, `InvalidSpec` |
+| Key claimed by an older policy | `Accepted: False`, `DuplicateResourceKey` |
+| Publish to Pangolin failed | `Accepted: True`, `Programmed: False`, `PublishFailed` |
+
+`kubectl get resourcepolicies` (short name `prp`) shows both conditions.
 
 ## Known issues in the environment
 

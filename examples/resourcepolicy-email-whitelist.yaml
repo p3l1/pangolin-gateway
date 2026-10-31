@@ -1,0 +1,31 @@
+# A shared policy that lets two kinds of visitor in: a Pangolin role after sign-in,
+# and anyone from one domain by e-mail code. Needs --pangolin-licensed.
+apiVersion: pangolin.p3l1.de/v1alpha1
+kind: ResourcePolicy
+metadata:
+  name: choir
+  namespace: demo
+spec:
+  displayName: Choir members
+  roles: [Member]
+  emailWhitelist:
+    - anna@example.com
+    - "*@plan-b-chor.de"
+---
+# The route names the policy and carries no access annotation of its own.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: web
+  namespace: demo
+  annotations:
+    pangolin.p3l1.de/policy: choir
+spec:
+  parentRefs:
+    - name: pangolin
+  hostnames:
+    - demo.example.com
+  rules:
+    - backendRefs:
+        - name: web
+          port: 8080
