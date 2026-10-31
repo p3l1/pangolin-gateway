@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/p3l1/pangolin-gateway/compare/v0.9.0...v0.10.0) (2026-10-31)
+
+
+### Features
+
+* e-mail whitelist and licensed ResourcePolicy CRD ([#42](https://github.com/p3l1/pangolin-gateway/issues/42)) ([a6e7b63](https://github.com/p3l1/pangolin-gateway/commit/a6e7b630f7b4191904e6b6c0bf3126d36388775b))
+
 ## [0.9.0](https://github.com/p3l1/pangolin-gateway/compare/v0.8.0...v0.9.0) (2026-10-25)
 
 
