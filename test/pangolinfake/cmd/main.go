@@ -15,11 +15,15 @@ import (
 
 func main() {
 	addr := flag.String("listen", ":8080", "address to listen on")
+	licensed := flag.Bool("licensed", false, "hold a licence for shared resource policies")
 	flag.Parse()
+
+	fake := pangolinfake.New()
+	fake.SetLicensed(*licensed)
 
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           pangolinfake.New().Handler(),
+		Handler:           fake.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	log.Printf("pangolin-fake listening on %s", *addr)

@@ -483,3 +483,90 @@ func TestListResourceMtlsCertificatesAuthErrorNamesItsAction(t *testing.T) {
 		t.Errorf("error = %v, want an AuthError naming listResourceMtlsCertificates", err)
 	}
 }
+
+func TestListResourcePoliciesNormalisesTheRowsAndFollowsPagination(t *testing.T) {
+	pages := map[string]string{
+		"1": `{"success":true,"error":false,"message":"ok","status":200,"data":{
+			"policies":[{"resourcePolicyId":3,"name":"A","niceId":"gw-a-one","orgId":"o","resources":[]}],
+			"pagination":{"total":2,"pageSize":1,"page":1}}}`,
+		"2": `{"success":true,"error":false,"message":"ok","status":200,"data":{
+			"policies":[{"resourcePolicyId":4,"name":"B","niceId":"handwritten","orgId":"o","resources":[]}],
+			"pagination":{"total":2,"pageSize":1,"page":2}}}`,
+	}
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if want := "/v1/org/test-org/resource-policies"; r.URL.Path != want {
+			t.Errorf("path = %s, want %s", r.URL.Path, want)
+		}
+		body, ok := pages[r.URL.Query().Get("page")]
+		if !ok {
+			t.Errorf("unexpected page %q", r.URL.Query().Get("page"))
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = fmt.Fprint(w, body)
+	}))
+
+	got, err := c.ListResourcePolicies(context.Background())
+	if err != nil {
+		t.Fatalf("ListResourcePolicies: %v", err)
+	}
+	if len(got) != 2 || got[0] != (Resource{ResourceID: 3, NiceID: "gw-a-one"}) ||
+		got[1] != (Resource{ResourceID: 4, NiceID: "handwritten"}) {
+		t.Errorf("rows = %+v", got)
+	}
+}
+
+func TestListResourcePoliciesStopsOnAStallingPage(t *testing.T) {
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"success":true,"error":false,"message":"ok","status":200,"data":{
+			"policies":[{"resourcePolicyId":3,"niceId":"gw-a-one"}],
+			"pagination":{"total":99,"pageSize":1,"page":1}}}`)
+	}))
+
+	if got, err := c.ListResourcePolicies(context.Background()); err == nil {
+		t.Fatalf("want an error when the listing stalls, got %d policies", len(got))
+	}
+}
+
+func TestDeleteResourcePolicyUsesTheNumericID(t *testing.T) {
+	var gotMethod, gotPath string
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		_, _ = fmt.Fprint(w, `{"success":true,"error":false,"message":"deleted","status":200,"data":{}}`)
+	}))
+
+	if err := c.DeleteResourcePolicy(context.Background(), 3); err != nil {
+		t.Fatalf("DeleteResourcePolicy: %v", err)
+	}
+	if gotMethod != http.MethodDelete || gotPath != "/v1/resource-policy/3" {
+		t.Errorf("request = %s %s, want DELETE /v1/resource-policy/3", gotMethod, gotPath)
+	}
+}
+
+func TestResourcePolicyAuthErrorsNameTheirAction(t *testing.T) {
+	for action, call := range map[string]func(Client) error{
+		"listResourcePolicies": func(c Client) error {
+			_, err := c.ListResourcePolicies(context.Background())
+			return err
+		},
+		"deleteResourcePolicy": func(c Client) error {
+			return c.DeleteResourcePolicy(context.Background(), 3)
+		},
+	} {
+		t.Run(action, func(t *testing.T) {
+			c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = fmt.Fprint(w, `{"success":false,"error":true,"message":"denied","status":403,"data":null}`)
+			}))
+
+			err := call(c)
+			var authErr *AuthError
+			if !errors.As(err, &authErr) {
+				t.Fatalf("error %v is not an *AuthError", err)
+			}
+			if !strings.Contains(err.Error(), action) {
+				t.Errorf("error %q does not name the %q action", err, action)
+			}
+		})
+	}
+}

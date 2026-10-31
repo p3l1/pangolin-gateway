@@ -26,10 +26,12 @@ func NewDryRun(inner Client, log logr.Logger) *DryRun {
 func (d *DryRun) ApplyBlueprint(_ context.Context, bp Blueprint) error {
 	public := keysOf(bp.PublicResources)
 	private := keysOf(bp.PrivateResources)
+	policies := keysOf(bp.PublicPolicies)
 
 	d.Log.Info("dry run: would apply blueprint",
 		"publicResources", len(public), "publicKeys", public,
-		"privateResources", len(private), "privateKeys", private)
+		"privateResources", len(private), "privateKeys", private,
+		"publicPolicies", len(policies), "policyKeys", policies)
 	return nil
 }
 
@@ -52,6 +54,10 @@ func (d *DryRun) ListPrivateResources(ctx context.Context) ([]Resource, error) {
 	return d.Inner.ListPrivateResources(ctx)
 }
 
+func (d *DryRun) ListResourcePolicies(ctx context.Context) ([]Resource, error) {
+	return d.Inner.ListResourcePolicies(ctx)
+}
+
 func (d *DryRun) ListSites(ctx context.Context) ([]Site, error) {
 	return d.Inner.ListSites(ctx)
 }
@@ -71,6 +77,11 @@ func (d *DryRun) DeletePublicResource(_ context.Context, id int) error {
 
 func (d *DryRun) DeletePrivateResource(_ context.Context, id int) error {
 	d.Log.Info("dry run: would delete private resource", "siteResourceId", id)
+	return nil
+}
+
+func (d *DryRun) DeleteResourcePolicy(_ context.Context, id int) error {
+	d.Log.Info("dry run: would delete resource policy", "resourcePolicyId", id)
 	return nil
 }
 

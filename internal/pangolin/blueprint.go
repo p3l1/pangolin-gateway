@@ -64,15 +64,25 @@ type Blueprint struct {
 	// merged into proxy-resources. Reachable only through a Pangolin client, so
 	// it carries no auth block: access is granted by role and by user.
 	PrivateResources map[string]PrivateResource `json:"private-resources"`
+
+	// Shared resource policies, a licensed feature: Pangolin rejects the whole
+	// document for an unlicensed organisation, so the key is omitted while empty.
+	// Applying creates or updates a policy and never deletes one.
+	PublicPolicies map[string]PublicPolicy `json:"public-policies,omitempty"`
 }
 
 // PublicResource is one entry under public-resources, keyed by its niceId.
 type PublicResource struct {
-	Name       string   `json:"name"`
-	Mode       string   `json:"mode"`
-	FullDomain string   `json:"full-domain,omitempty"`
-	Auth       *Auth    `json:"auth,omitempty"`
-	Targets    []Target `json:"targets,omitempty"`
+	Name       string `json:"name"`
+	Mode       string `json:"mode"`
+	FullDomain string `json:"full-domain,omitempty"`
+	Auth       *Auth  `json:"auth,omitempty"`
+
+	// niceId of a shared policy. A resource carrying one takes its sign-in,
+	// whitelist and rules from the policy; without it Pangolin returns the
+	// resource to its own inline settings.
+	Policy  string   `json:"policy,omitempty"`
+	Targets []Target `json:"targets,omitempty"`
 
 	// Never omitted. Pangolin switches rule evaluation on for a resource whose
 	// rules array is non-empty and off when it is empty, but leaves the setting
@@ -121,6 +131,32 @@ type Auth struct {
 	// empty list would revoke what its dashboard granted.
 	SSORoles []string `json:"sso-roles,omitempty"`
 	SSOUsers []string `json:"sso-users,omitempty"`
+
+	// Replaced on every apply, so omitting it empties the list. Pangolin turns
+	// the whitelist on when the list is non-empty.
+	WhitelistUsers []string `json:"whitelist-users,omitempty"`
+}
+
+// PublicPolicy is one entry under public-policies, keyed by its niceId. Every
+// list is replaced on each apply, so an omitted one is an empty one.
+type PublicPolicy struct {
+	Name string `json:"name"`
+	SSO  bool   `json:"sso"`
+
+	SSORoles []string `json:"sso-roles,omitempty"`
+	SSOUsers []string `json:"sso-users,omitempty"`
+
+	// A string here, unlike the number on a resource's auth block.
+	Pincode string `json:"pincode,omitempty"`
+
+	// Always sent: Pangolin's schema defaults an absent flag to false, which
+	// would leave a non-empty whitelist switched off.
+	EmailWhitelistEnabled bool     `json:"email-whitelist-enabled"`
+	WhitelistUsers        []string `json:"whitelist-users,omitempty"`
+
+	// Always sent, so removing the last rule switches evaluation off.
+	ApplyRules bool  `json:"apply-rules"`
+	Rules      Rules `json:"rules"`
 }
 
 // BasicAuth lets a client past with an Authorization header instead of a login.

@@ -21,21 +21,27 @@ pangolin:
   # this chart never creates a secret. The key needs three API actions:
   # applyBlueprint, listResources and deleteResource; publishing private
   # resources also needs listSiteResources and deleteSiteResource. listSites,
-  # listClients and listUsers let names be checked before the apply.
+  # listClients and listUsers let names be checked before the apply. With
+  # pangolin.licensed the key also needs listResourcePolicies and
+  # deleteResourcePolicy.
   apiKeySecret:
     name: ""
     key: apiKey
+  # The Pangolin organisation holds a licence for shared resource policies. Turns
+  # on ResourcePolicy objects and the pangolin.p3l1.de/policy annotation; off, the
+  # controller never calls the policy API and refuses both.
+  licensed: false
   # Log every write instead of performing it.
   dryRun: false
   # How often to reconcile without a cluster event, repairing drift Pangolin-side.
   resyncInterval: 5m
 
 crds:
-  # Install the PrivateResource CRD. The controller watches it and does not start
-  # without it, so turn this off only when the CRD is installed some other way.
+  # Install the PrivateResource and ResourcePolicy CRDs. The controller watches
+  # them and does not start without them, so turn this off only when the CRD is installed some other way.
   install: true
-  # Keep the CRD when the release is uninstalled. Deleting it deletes every
-  # PrivateResource, and the next controller pass prunes them from Pangolin.
+  # Keep the CRDs when the release is uninstalled. Deleting them deletes every
+  # PrivateResource and ResourcePolicy, and the next controller pass prunes them from Pangolin.
   keep: true
 
 gatewayClass:

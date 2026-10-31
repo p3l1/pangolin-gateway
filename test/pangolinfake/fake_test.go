@@ -527,3 +527,114 @@ func TestFakeListsMachinesAndUsers(t *testing.T) {
 		t.Errorf("ListUsers err = %v, want an AuthError", err)
 	}
 }
+
+func choir() pangolin.PublicPolicy {
+	return pangolin.PublicPolicy{
+		Name: "Choir", SSO: true, EmailWhitelistEnabled: true,
+		WhitelistUsers: []string{"anna@example.com", "*@plan-b-chor.de"},
+	}
+}
+
+func TestFakeRefusesPoliciesWhileUnlicensed(t *testing.T) {
+	_, c := newFake(t)
+	ctx := context.Background()
+
+	if err := c.ApplyBlueprint(ctx, pangolin.Blueprint{
+		PublicPolicies: map[string]pangolin.PublicPolicy{"gw-demo-choir": choir()},
+	}); err == nil || !strings.Contains(err.Error(), "does not support shared resource policies") {
+		t.Errorf("applying a policy unlicensed: %v", err)
+	}
+
+	withPolicy := resource("a.example.com")
+	withPolicy.Policy = "gw-demo-choir"
+	if err := c.ApplyBlueprint(ctx, pangolin.Blueprint{
+		PublicResources: map[string]pangolin.PublicResource{"gw-demo-a": withPolicy},
+	}); err == nil {
+		t.Error("a resource naming a policy was accepted unlicensed")
+	}
+
+	var authErr *pangolin.AuthError
+	if _, err := c.ListResourcePolicies(ctx); !errors.As(err, &authErr) {
+		t.Errorf("listing unlicensed: %v, want a 403", err)
+	}
+}
+
+func TestFakeStoresListsAndDeletesPolicies(t *testing.T) {
+	f, c := newFake(t)
+	f.SetLicensed(true)
+	ctx := context.Background()
+
+	if err := c.ApplyBlueprint(ctx, pangolin.Blueprint{
+		PublicPolicies: map[string]pangolin.PublicPolicy{"gw-demo-choir": choir()},
+	}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	f.SeedPolicy("handwritten", pangolin.PublicPolicy{Name: "Hand", SSO: true})
+
+	rows, err := c.ListResourcePolicies(ctx)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("ListResourcePolicies = %+v, %v; want both policies", rows, err)
+	}
+	if err := c.DeleteResourcePolicy(ctx, rows[0].ResourceID); err != nil {
+		t.Fatalf("DeleteResourcePolicy: %v", err)
+	}
+	if got := f.PolicyDeleted(); len(got) != 1 || got[0] != rows[0].ResourceID {
+		t.Errorf("policyDeleted = %v", got)
+	}
+}
+
+func TestFakeRefusesToDeleteAPolicyAResourceStillNames(t *testing.T) {
+	f, c := newFake(t)
+	f.SetLicensed(true)
+	ctx := context.Background()
+
+	res := resource("a.example.com")
+	res.Policy = "gw-demo-choir"
+	if err := c.ApplyBlueprint(ctx, pangolin.Blueprint{
+		PublicPolicies:  map[string]pangolin.PublicPolicy{"gw-demo-choir": choir()},
+		PublicResources: map[string]pangolin.PublicResource{"gw-demo-a": res},
+	}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	rows, _ := c.ListResourcePolicies(ctx)
+	if err := c.DeleteResourcePolicy(ctx, rows[0].ResourceID); err == nil {
+		t.Error("the policy was deleted while a resource named it")
+	}
+}
+
+func TestFakeRejectsWhatPangolinRejectsInAPolicy(t *testing.T) {
+	good := choir()
+	for name, mutate := range map[string]func(*pangolin.PublicPolicy){
+		"empty name":     func(p *pangolin.PublicPolicy) { p.Name = "" },
+		"short pincode":  func(p *pangolin.PublicPolicy) { p.Pincode = "123" },
+		"admin role":     func(p *pangolin.PublicPolicy) { p.SSORoles = []string{"Admin"} },
+		"bad whitelist":  func(p *pangolin.PublicPolicy) { p.WhitelistUsers = []string{"an*@example.com"} },
+		"bad rule value": func(p *pangolin.PublicPolicy) { p.Rules = pangolin.Rules{{Action: "deny", Match: "ip", Value: "x"}} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, c := newFake(t)
+			f.SetLicensed(true)
+			p := good
+			mutate(&p)
+
+			if err := c.ApplyBlueprint(context.Background(), pangolin.Blueprint{
+				PublicPolicies: map[string]pangolin.PublicPolicy{"gw-demo-choir": p},
+			}); err == nil {
+				t.Error("an invalid policy was accepted")
+			}
+		})
+	}
+}
+
+func TestFakeRejectsAWildcardInAResourceWhitelist(t *testing.T) {
+	_, c := newFake(t)
+
+	res := resource("a.example.com")
+	res.Auth = &pangolin.Auth{WhitelistUsers: []string{"*@example.com"}}
+	if err := c.ApplyBlueprint(context.Background(), pangolin.Blueprint{
+		PublicResources: map[string]pangolin.PublicResource{"gw-demo-a": res},
+	}); err == nil {
+		t.Error("a wildcard in a resource's whitelist-users was accepted; zod rejects it")
+	}
+}

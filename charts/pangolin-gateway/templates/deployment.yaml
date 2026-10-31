@@ -40,6 +40,9 @@ spec:
             - --pangolin-org={{ required "pangolin.org is required" .Values.pangolin.org }}
             - --default-site={{ required "pangolin.defaultSite is required" .Values.pangolin.defaultSite }}
             - --resync-interval={{ .Values.pangolin.resyncInterval }}
+            {{- if .Values.pangolin.licensed }}
+            - --pangolin-licensed
+            {{- end }}
             {{- if .Values.pangolin.dryRun }}
             - --dry-run
             {{- end }}

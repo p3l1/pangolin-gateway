@@ -21,7 +21,8 @@ var (
 )
 
 func addKnownTypes(s *runtime.Scheme) error {
-	s.AddKnownTypes(GroupVersion, &PrivateResource{}, &PrivateResourceList{})
+	s.AddKnownTypes(GroupVersion, &PrivateResource{}, &PrivateResourceList{},
+		&ResourcePolicy{}, &ResourcePolicyList{})
 	metav1.AddToGroupVersion(s, GroupVersion)
 	return nil
 }

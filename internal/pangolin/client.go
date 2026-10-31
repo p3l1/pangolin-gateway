@@ -28,6 +28,12 @@ type Client interface {
 	DeletePublicResource(ctx context.Context, id int) error
 	DeletePrivateResource(ctx context.Context, id int) error
 
+	// ListResourcePolicies and DeleteResourcePolicy serve the prune of shared
+	// policies, a licensed feature. A policy row reuses Resource, ResourceID
+	// holding its resourcePolicyId.
+	ListResourcePolicies(ctx context.Context) ([]Resource, error)
+	DeleteResourcePolicy(ctx context.Context, id int) error
+
 	// ListResourceMtlsCertificates reads a resource's trusted CA set, so an apply
 	// of auth.mtls can be confirmed to have taken effect.
 	ListResourceMtlsCertificates(ctx context.Context, id int) ([]MtlsCertificate, error)
@@ -47,6 +53,10 @@ const (
 	// they are guarded by their own pair of actions.
 	actionListSiteResources  = "listSiteResources"
 	actionDeleteSiteResource = "deleteSiteResource"
+
+	// Shared resource policies are licensed and guarded by their own pair.
+	actionListResourcePolicies = "listResourcePolicies"
+	actionDeleteResourcePolicy = "deleteResourcePolicy"
 
 	// Reading a resource's trusted CA set to confirm an mTLS apply took effect.
 	actionListResourceMtlsCertificates = "listResourceMtlsCertificates"
@@ -194,6 +204,14 @@ type pagination struct {
 
 type machinesData struct {
 	Clients    []Machine  `json:"clients"`
+	Pagination pagination `json:"pagination"`
+}
+
+type policiesData struct {
+	Policies []struct {
+		ResourcePolicyID int    `json:"resourcePolicyId"`
+		NiceID           string `json:"niceId"`
+	} `json:"policies"`
 	Pagination pagination `json:"pagination"`
 }
 
@@ -369,6 +387,20 @@ func (c *HTTPClient) ListUsers(ctx context.Context) ([]User, error) {
 		func(d usersData) ([]User, pagination) { return d.Users, d.Pagination })
 }
 
+// ListResourcePolicies reports the organisation's shared policies. Pangolin
+// lists only the global ones, which is what the blueprint creates.
+func (c *HTTPClient) ListResourcePolicies(ctx context.Context) ([]Resource, error) {
+	return listPages(ctx, c, "resource policies", "resource-policies", "",
+		actionListResourcePolicies,
+		func(d policiesData) ([]Resource, pagination) {
+			rows := make([]Resource, 0, len(d.Policies))
+			for _, p := range d.Policies {
+				rows = append(rows, Resource{ResourceID: p.ResourcePolicyID, NiceID: p.NiceID})
+			}
+			return rows, d.Pagination
+		})
+}
+
 // listPages walks a paginated listing under /org/{orgId}/{resource}. It fails
 // rather than spins on an instance that ignores the page parameter.
 func listPages[D, T any](
@@ -423,6 +455,15 @@ func (c *HTTPClient) DeletePrivateResource(ctx context.Context, id int) error {
 	path := "/private-resource/" + strconv.Itoa(id)
 	if _, err := c.do(ctx, http.MethodDelete, path, actionDeleteSiteResource, nil); err != nil {
 		return fmt.Errorf("deleting private resource %d: %w", id, err)
+	}
+	return nil
+}
+
+// DeleteResourcePolicy fails while any resource still references the policy.
+func (c *HTTPClient) DeleteResourcePolicy(ctx context.Context, id int) error {
+	path := "/resource-policy/" + strconv.Itoa(id)
+	if _, err := c.do(ctx, http.MethodDelete, path, actionDeleteResourcePolicy, nil); err != nil {
+		return fmt.Errorf("deleting resource policy %d: %w", id, err)
 	}
 	return nil
 }

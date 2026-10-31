@@ -156,6 +156,8 @@ type fakeState struct {
 	Applies          int                       `json:"applies"`
 	Deleted          []int                     `json:"deleted"`
 	PrivateDeleted   []int                     `json:"privateDeleted"`
+	PublicPolicies   map[string]map[string]any `json:"publicPolicies"`
+	PolicyDeleted    []int                     `json:"policyDeleted"`
 }
 
 func readFakeState(t *testing.T) fakeState {

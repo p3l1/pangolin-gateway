@@ -45,6 +45,10 @@ type Publisher struct {
 	DefaultSite    string
 	ResyncInterval time.Duration
 
+	// Licensed enables the Pangolin features that need a licence: rendering
+	// ResourcePolicies and pruning the policies they leave behind.
+	Licensed bool
+
 	// DryRun must match the decorator wrapping Pangolin. It only affects status:
 	// reporting a plain Accepted=True while nothing was published would make the
 	// rehearsal look like a successful rollout.
@@ -55,6 +59,8 @@ type Publisher struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/status;gateways/status;gatewayclasses/status,verbs=get;patch;update
 // +kubebuilder:rbac:groups=pangolin.p3l1.de,resources=privateresources,verbs=get;list;watch
 // +kubebuilder:rbac:groups=pangolin.p3l1.de,resources=privateresources/status,verbs=get;patch;update
+// +kubebuilder:rbac:groups=pangolin.p3l1.de,resources=resourcepolicies,verbs=get;list;watch
+// +kubebuilder:rbac:groups=pangolin.p3l1.de,resources=resourcepolicies/status,verbs=get;patch;update
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (p *Publisher) SetupWithManager(mgr ctrl.Manager) error {
@@ -78,6 +84,7 @@ func (p *Publisher) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&gatewayv1.Gateway{}, toWholeState, specOrAnnotations).
 		Watches(&gatewayv1.GatewayClass{}, toWholeState, specOrAnnotations).
 		Watches(&v1alpha1.PrivateResource{}, toWholeState, specOrAnnotations).
+		Watches(&v1alpha1.ResourcePolicy{}, toWholeState, specOrAnnotations).
 		Complete(p)
 }
 
@@ -91,6 +98,7 @@ func (p *Publisher) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result,
 		gateways  gatewayv1.GatewayList
 		routes    gatewayv1.HTTPRouteList
 		resources v1alpha1.PrivateResourceList
+		policies  v1alpha1.ResourcePolicyList
 	)
 	if err := p.Client.List(ctx, &classes); err != nil {
 		return ctrl.Result{}, fmt.Errorf("listing GatewayClasses: %w", err)
@@ -103,6 +111,9 @@ func (p *Publisher) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result,
 	}
 	if err := p.Client.List(ctx, &resources); err != nil {
 		return ctrl.Result{}, fmt.Errorf("listing PrivateResources: %w", err)
+	}
+	if err := p.Client.List(ctx, &policies); err != nil {
+		return ctrl.Result{}, fmt.Errorf("listing ResourcePolicies: %w", err)
 	}
 
 	// Pangolin rejects the entire apply for one unknown site, so the renderer
@@ -128,6 +139,8 @@ func (p *Publisher) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result,
 		DefaultSite:      p.DefaultSite,
 		KnownSites:       knownSites,
 		PrivateResources: resources.Items,
+		Licensed:         p.Licensed,
+		ResourcePolicies: policies.Items,
 	}
 	inputs.KnownMachines, inputs.KnownUsers = p.knownGrantees(ctx, routes.Items, resources.Items)
 
@@ -153,15 +166,19 @@ func (p *Publisher) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result,
 		Set(float64(len(blueprint.PublicResources)))
 	resourcesDesired.WithLabelValues(visibilityPrivate).
 		Set(float64(len(blueprint.PrivateResources)))
+	resourcesDesired.WithLabelValues(visibilityPolicy).
+		Set(float64(len(blueprint.PublicPolicies)))
 	routesRejected.Set(float64(countRejected(verdicts)))
 	privateResourcesRejected.Set(float64(countRejectedResources(result.PrivateResources)))
+	policiesRejected.Set(float64(countRejectedResources(result.Policies)))
 
 	publishErr := p.Pangolin.ApplyBlueprint(ctx, blueprint)
 	if publishErr != nil {
 		publishTotal.WithLabelValues("error").Inc()
 		log.Error(publishErr, "applying blueprint",
 			"publicResources", len(blueprint.PublicResources),
-			"privateResources", len(blueprint.PrivateResources))
+			"privateResources", len(blueprint.PrivateResources),
+			"policies", len(blueprint.PublicPolicies))
 		markPublishFailed(verdicts, publishErr)
 	} else {
 		publishTotal.WithLabelValues("success").Inc()
@@ -188,11 +205,15 @@ func (p *Publisher) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result,
 	} else {
 		pruneSkippedTotal.WithLabelValues("apply_failed", visibilityPublic).Inc()
 		pruneSkippedTotal.WithLabelValues("apply_failed", visibilityPrivate).Inc()
+		if p.Licensed {
+			pruneSkippedTotal.WithLabelValues("apply_failed", visibilityPolicy).Inc()
+		}
 	}
 
 	statusErr := errors.Join(
 		p.writeStatus(ctx, routes.Items, verdicts, gateways.Items, classes.Items),
 		p.writeResourceStatus(ctx, resources.Items, result.PrivateResources, publishErr),
+		p.writePolicyStatus(ctx, policies.Items, result.Policies, publishErr),
 	)
 
 	if err := errors.Join(publishErr, pruneErr, statusErr); err != nil {
@@ -265,12 +286,20 @@ func (p *Publisher) resyncInterval() time.Duration {
 // independently: a private listing that fails says nothing about which public
 // resources are still wanted.
 func (p *Publisher) prune(ctx context.Context, desired pangolin.Blueprint) error {
-	return errors.Join(
+	errs := []error{
 		pruneSection(ctx, visibilityPublic, desired.PublicResources,
-			p.Pangolin.ListPublicResources, p.Pangolin.DeletePublicResource),
+			p.Pangolin.ListPublicResources, p.Pangolin.DeletePublicResource, false),
 		pruneSection(ctx, visibilityPrivate, desired.PrivateResources,
-			p.Pangolin.ListPrivateResources, p.Pangolin.DeletePrivateResource),
-	)
+			p.Pangolin.ListPrivateResources, p.Pangolin.DeletePrivateResource, false),
+	}
+	// Last, because Pangolin refuses to delete a policy a resource still names,
+	// and the resources pruned above are the ones that may have named it. An
+	// unlicensed organisation has no policy API to list.
+	if p.Licensed {
+		errs = append(errs, pruneSection(ctx, visibilityPolicy, desired.PublicPolicies,
+			p.Pangolin.ListResourcePolicies, p.Pangolin.DeleteResourcePolicy, true))
+	}
+	return errors.Join(errs...)
 }
 
 func pruneSection[T any](
@@ -279,6 +308,7 @@ func pruneSection[T any](
 	desired map[string]T,
 	list func(context.Context) ([]pangolin.Resource, error),
 	del func(context.Context, int) error,
+	tolerateDeleteFailure bool,
 ) error {
 	log := ctrl.LoggerFrom(ctx).WithValues("visibility", visibility)
 
@@ -304,7 +334,10 @@ func pruneSection[T any](
 			// take the blueprint apply down with it.
 			pruneTotal.WithLabelValues("error", visibility).Inc()
 			log.Error(err, "deleting orphaned resource", "niceId", r.NiceID, "resourceId", r.ResourceID)
-			failures = append(failures, err)
+			// A refused delete is retried on the next pass and does not fail this one.
+			if !tolerateDeleteFailure {
+				failures = append(failures, err)
+			}
 			continue
 		}
 		pruneTotal.WithLabelValues("success", visibility).Inc()
@@ -407,27 +440,6 @@ func (p *Publisher) writeResourceStatus(
 		key := types.NamespacedName{Namespace: r.Namespace, Name: r.Name}
 		v := verdicts[key]
 
-		programmed := condition{
-			typ:     v1alpha1.ConditionProgrammed,
-			status:  metav1.ConditionTrue,
-			reason:  gateway.ReasonProgrammed,
-			message: "Published to Pangolin as " + v.Key,
-		}
-		switch {
-		case !v.Published():
-			programmed.status = metav1.ConditionFalse
-			programmed.reason = gateway.ReasonNotAccepted
-			programmed.message = "Not published: " + v.Accepted.Message
-		case publishErr != nil:
-			programmed.status = metav1.ConditionFalse
-			programmed.reason = gateway.ReasonPublishFailed
-			programmed.message = fmt.Sprintf("publishing to Pangolin failed: %v", publishErr)
-		case p.DryRun:
-			programmed.status = metav1.ConditionFalse
-			programmed.reason = gateway.ReasonDryRun
-			programmed.message = "dry run: accepted but not published to Pangolin"
-		}
-
 		changed := setConditions(&r.Status.Conditions, r.Generation,
 			condition{
 				typ:     v1alpha1.ConditionAccepted,
@@ -435,7 +447,7 @@ func (p *Publisher) writeResourceStatus(
 				reason:  v.Accepted.Reason,
 				message: v.Accepted.Message,
 			},
-			programmed,
+			p.programmed(v, publishErr),
 		)
 		// Empty once rejected. A failed apply changes nothing: a resource that
 		// was never applied has no key yet, and a live one keeps its own.
@@ -455,6 +467,78 @@ func (p *Publisher) writeResourceStatus(
 		}
 		if err := p.Client.Status().Update(ctx, &r); err != nil {
 			log.Error(err, "updating PrivateResource status", "privateResource", key)
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// programmed derives the Programmed condition of a PrivateResource or
+// ResourcePolicy from its verdict and the outcome of the apply.
+func (p *Publisher) programmed(v gateway.ResourceVerdict, publishErr error) condition {
+	c := condition{
+		typ:     v1alpha1.ConditionProgrammed,
+		status:  metav1.ConditionTrue,
+		reason:  gateway.ReasonProgrammed,
+		message: "Published to Pangolin as " + v.Key,
+	}
+	switch {
+	case !v.Published():
+		c.status = metav1.ConditionFalse
+		c.reason = gateway.ReasonNotAccepted
+		c.message = "Not published: " + v.Accepted.Message
+	case publishErr != nil:
+		c.status = metav1.ConditionFalse
+		c.reason = gateway.ReasonPublishFailed
+		c.message = fmt.Sprintf("publishing to Pangolin failed: %v", publishErr)
+	case p.DryRun:
+		c.status = metav1.ConditionFalse
+		c.reason = gateway.ReasonDryRun
+		c.message = "dry run: accepted but not published to Pangolin"
+	}
+	return c
+}
+
+// writePolicyStatus is writeResourceStatus for ResourcePolicies.
+func (p *Publisher) writePolicyStatus(
+	ctx context.Context,
+	policies []v1alpha1.ResourcePolicy,
+	verdicts map[types.NamespacedName]gateway.ResourceVerdict,
+	publishErr error,
+) error {
+	log := ctrl.LoggerFrom(ctx)
+	var errs []error
+
+	for i := range policies {
+		rp := policies[i]
+		key := types.NamespacedName{Namespace: rp.Namespace, Name: rp.Name}
+		v := verdicts[key]
+
+		changed := setConditions(&rp.Status.Conditions, rp.Generation,
+			condition{
+				typ:     v1alpha1.ConditionAccepted,
+				status:  v.Accepted.Status,
+				reason:  v.Accepted.Reason,
+				message: v.Accepted.Message,
+			},
+			p.programmed(v, publishErr),
+		)
+		policyKey := rp.Status.PolicyKey
+		switch {
+		case !v.Published():
+			policyKey = ""
+		case publishErr == nil:
+			policyKey = v.Key
+		}
+		if rp.Status.PolicyKey != policyKey {
+			rp.Status.PolicyKey = policyKey
+			changed = true
+		}
+		if !changed {
+			continue
+		}
+		if err := p.Client.Status().Update(ctx, &rp); err != nil {
+			log.Error(err, "updating ResourcePolicy status", "resourcePolicy", key)
 			errs = append(errs, err)
 		}
 	}
