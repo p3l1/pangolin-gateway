@@ -608,9 +608,10 @@ available, a `users` or `machines` list **none** of whose names exist is rejecte
 would fail the whole apply for it — while a name that does not exist among others is dropped by
 Pangolin and named in the `Accepted` message.
 
-Resources from both kinds share the collision check: a full-domain, an alias or a route
-hostname claimed twice goes to the oldest object, and the other is rejected with
-`DuplicateHostname`.
+Resources from both kinds share the collision check: a full-domain, an alias or a private
+route's hostname claimed twice goes to the oldest object, and the other is rejected with
+`DuplicateHostname`. A public route may share its hostname with a private resource or route:
+a connected Pangolin client reaches the private one, everyone else the public one.
 
 The controller publishes every `PrivateResource` in the cluster; there is no class to opt
 in through. Unlike a route, whose backend is a Service in its own namespace, a
@@ -640,7 +641,7 @@ route, cross-namespace backends via ReferenceGrant, and listener/`allowedRoutes`
 | Publish to Pangolin failed | `Accepted: False`, `PublishFailed` |
 | No, several, or wildcard hostname | `Accepted: False`, `UnsupportedValue` |
 | Several rules, filters, or several backendRefs | `Accepted: False`, `UnsupportedValue` |
-| Two routes claiming one key or hostname | `Accepted: False`, `DuplicateResourceKey` / `DuplicateHostname` (oldest route wins) |
+| Two routes claiming one key, or one hostname within the same section | `Accepted: False`, `DuplicateResourceKey` / `DuplicateHostname` (oldest route wins) |
 | Backend is not a Service | `ResolvedRefs: False`, `InvalidKind` |
 | Cross-namespace backendRef | `ResolvedRefs: False`, `RefNotPermitted` |
 | Site does not exist in the organisation | `Accepted: False`, `UnknownSite` |

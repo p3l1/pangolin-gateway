@@ -67,7 +67,7 @@ type Inputs struct {
 	KnownSites map[string]bool
 
 	// PrivateResources are rendered into private-resources beside the routes,
-	// competing with them for keys and hostnames.
+	// competing with them for keys and with private routes for hostnames.
 	PrivateResources []v1alpha1.PrivateResource
 
 	// KnownMachines holds machine client niceIds, KnownUsers usernames and e-mail
@@ -132,8 +132,7 @@ type Verdict struct {
 func (v Verdict) Published() bool { return v.Key != "" }
 
 // rendered is one blueprint entry. Exactly one of public and private is set: a
-// route is reachable from the internet or through a Pangolin client, and
-// publishing it into both sections would claim its hostname twice.
+// route is reachable either from the internet or through a Pangolin client.
 type rendered struct {
 	key string
 
@@ -315,11 +314,12 @@ func resolveCollisions(candidates []candidate, bp pangolin.Blueprint) map[claima
 		}
 	})
 
-	// Both maps span the sections and both kinds. Pangolin checks each section
-	// on its own, but two objects claiming one name is a mistake whichever side
-	// they sit on, and the check on the private side is narrower than it appears.
+	// Keys span both sections. Hostnames are checked per section, as Pangolin
+	// does: a public and a private resource may share a name, which a connected
+	// client then resolves to the private one.
 	keyOwner := map[string]claimant{}
-	hostOwner := map[string]claimant{}
+	publicHosts := map[string]claimant{}
+	privateHosts := map[string]claimant{}
 	outcomes := make(map[claimant]outcome, len(candidates))
 
 	for _, c := range candidates {
@@ -328,6 +328,10 @@ func resolveCollisions(candidates []candidate, bp pangolin.Blueprint) map[claima
 				"resource key %q is already claimed by %s", c.entry.key, owner)
 			outcomes[c.claimant] = outcome{rejected: &cond}
 			continue
+		}
+		hostOwner := privateHosts
+		if c.entry.public != nil {
+			hostOwner = publicHosts
 		}
 		if host, owner, taken := firstClaimed(c.entry.hostnames, hostOwner); taken {
 			cond := rejected(gatewayv1.RouteConditionReason(ReasonDuplicateHostname),
