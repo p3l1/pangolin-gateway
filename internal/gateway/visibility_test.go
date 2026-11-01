@@ -329,28 +329,49 @@ func TestRenderOmitsGrantsWhenAPublicRouteCarriesNone(t *testing.T) {
 	}
 }
 
-// Pangolin checks full-domain uniqueness per section, and the check on the
-// private side is narrower than it looks. Two routes claiming one hostname is a
-// mistake either way, so the renderer settles it across both sections.
-func TestRenderResolvesAHostnameCollisionAcrossSections(t *testing.T) {
-	older := route("demo", "priv", private(),
+// Pangolin checks full-domain uniqueness per section, so a public and a private
+// route may claim one hostname; a connected client resolves it to the private one.
+func TestRenderSharesAHostnameAcrossSections(t *testing.T) {
+	priv := route("demo", "priv", private(),
 		withHostnames("shared.example.com"),
 		withCreation(time.Unix(1000, 0)))
-	newer := route("demo", "pub",
+	pub := route("demo", "pub",
+		withHostnames("Shared.example.com"),
+		withCreation(time.Unix(2000, 0)))
+
+	bp, verdicts := Render(defaultInputs(priv, pub))
+
+	if _, ok := bp.PrivateResources["gw-demo-priv"]; !ok {
+		t.Errorf("the private route is missing; private = %v", bp.PrivateResources)
+	}
+	if _, ok := bp.PublicResources["gw-demo-pub"]; !ok {
+		t.Errorf("the public route is missing; public = %v", bp.PublicResources)
+	}
+	for _, name := range []string{"priv", "pub"} {
+		if v := verdictFor(t, verdicts, "demo", name); !v.Published() {
+			t.Errorf("route demo/%s Accepted = %+v, want published", name, v.Accepted)
+		}
+	}
+}
+
+// Within one section the older claimant still wins.
+func TestRenderResolvesAHostnameCollisionWithinThePrivateSection(t *testing.T) {
+	older := route("demo", "first", private(),
 		withHostnames("shared.example.com"),
+		withCreation(time.Unix(1000, 0)))
+	newer := route("demo", "second", private(),
+		withHostnames("SHARED.example.com"),
 		withCreation(time.Unix(2000, 0)))
 
 	bp, verdicts := Render(defaultInputs(older, newer))
 
-	if _, ok := bp.PrivateResources["gw-demo-priv"]; !ok {
-		t.Errorf("the older route lost its hostname; private = %v, public = %v",
-			bp.PrivateResources, bp.PublicResources)
+	if _, ok := bp.PrivateResources["gw-demo-first"]; !ok {
+		t.Errorf("the older route lost its hostname; private = %v", bp.PrivateResources)
 	}
-	if _, ok := bp.PublicResources["gw-demo-pub"]; ok {
-		t.Error("both routes published the same hostname")
+	if _, ok := bp.PrivateResources["gw-demo-second"]; ok {
+		t.Error("both private routes published the same hostname")
 	}
-	loser := verdictFor(t, verdicts, "demo", "pub")
-	if loser.Accepted.Reason != ReasonDuplicateHostname {
+	if loser := verdictFor(t, verdicts, "demo", "second"); loser.Accepted.Reason != ReasonDuplicateHostname {
 		t.Errorf("reason = %q, want %q", loser.Accepted.Reason, ReasonDuplicateHostname)
 	}
 }

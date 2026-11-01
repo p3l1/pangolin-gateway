@@ -85,7 +85,7 @@ values that would be overwritten.
 path query `siteResources.alias` and throw `Alias … already in use` inside the
 transaction, failing the whole document. The renderer resolves alias collisions
 the same way as hostnames — oldest wins — and counts aliases, full-domains and
-route hostnames as one namespace, compared case-insensitively. An alias held by a
+private route hostnames as one namespace, compared case-insensitively. An alias held by a
 resource this controller does not own — one made in the dashboard or by a
 hand-written blueprint — is not visible to it, and still fails the apply.
 
@@ -165,9 +165,10 @@ passes validation. The database check on the private side
 (`getDomainForSiteResource`) compares a non-inference resource only against
 *inference* resources, which narrows it further.
 
-The renderer does not rely on either. It resolves hostname collisions across
-both sections, oldest route wins — stricter than Pangolin, and stable whichever
-side the routes sit on.
+The renderer follows the same split. It resolves hostname collisions within
+each section, oldest route wins, and lets a public and a private entry share a
+name: a connected client resolves it to the private resource. Both sides
+request the certificate for that name, and Pangolin keeps one row per domain.
 
 As for public resources, the base domain must be registered and verified in the
 organisation or the apply throws. That check is not yet mirrored locally, and it

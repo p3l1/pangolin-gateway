@@ -480,8 +480,9 @@ func TestRenderResolvesAHostnameCollisionBetweenARouteAndAResource(t *testing.T)
 	}
 }
 
-// A public route's hostname counts too: the name is one DNS name either way.
-func TestRenderResolvesACollisionWithAPublicRoute(t *testing.T) {
+// Pangolin checks full-domain per section, so a public route and a private
+// resource may share a hostname; a connected client reaches the private one.
+func TestRenderSharesAHostnameBetweenAPublicRouteAndAResource(t *testing.T) {
 	pr := mcpDocuments()
 	pr.CreationTimestamp = metav1.NewTime(created.Add(time.Hour))
 	in := resourceInputs(pr)
@@ -490,8 +491,17 @@ func TestRenderResolvesACollisionWithAPublicRoute(t *testing.T) {
 	}
 
 	r := RenderAll(in)
-	if v := resourceVerdictFor(t, r, "newt", "mcp-documents"); v.Published() {
-		t.Error("published a resource whose hostname a public route already holds, differing only in case")
+	if v := verdictFor(t, r.Routes, "demo", "mcp"); !v.Published() {
+		t.Errorf("public route verdict = %+v, want published", v.Accepted)
+	}
+	if v := resourceVerdictFor(t, r, "newt", "mcp-documents"); !v.Published() {
+		t.Errorf("resource verdict = %+v, want published beside the public route", v.Accepted)
+	}
+	if _, ok := r.Blueprint.PublicResources["gw-demo-mcp"]; !ok {
+		t.Error("the public route is missing from public-resources")
+	}
+	if _, ok := r.Blueprint.PrivateResources["gw-pr-newt-mcp-documents"]; !ok {
+		t.Error("the resource is missing from private-resources")
 	}
 }
 

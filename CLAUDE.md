@@ -40,7 +40,7 @@ These are hard constraints, not preferences:
   Credentials are resolved before the render, by `internal/controller/basicauth.go`, and
   handed in through `Inputs.BasicAuth` so the renderer stays pure. `privateresource.go`
   translates a `PrivateResource`; `RenderAll` returns verdicts for both kinds, and both
-  compete in one collision check. `policy.go` translates a `ResourcePolicy` and resolves a
+  compete in one collision check, per section for hostnames. `policy.go` translates a `ResourcePolicy` and resolves a
   route's `policy` reference; `Inputs.Licensed` gates both.
 - `internal/pangolin/` — the Integration API client behind a ten-method interface, the
   blueprint types, and the dry-run decorator.
@@ -114,8 +114,8 @@ the docs:
 - `public-resources` is correct and is merged into the internal `proxy-resources` map.
 - `full-domain` is unique **per section**: Pangolin checks `proxy-resources` and
   `client-resources` against themselves, so a duplicate within one fails the entire apply.
-  The renderer resolves collisions itself — oldest route wins, across both sections — to keep
-  one typo from unpublishing the cluster.
+  The renderer resolves collisions itself — oldest route wins, within each section — to keep
+  one typo from unpublishing the cluster. A public and a private entry may share a hostname.
 - The apply is transactional: failures come back as 400, success as 201. There is no
   200-with-partial-failures case.
 - `DELETE /public-resource/{resourceId}` takes a **numeric** id, so the prune must list first
