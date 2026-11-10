@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/p3l1/pangolin-gateway/compare/v0.11.0...v0.11.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* keep PIN sessions alive across the periodic apply ([#46](https://github.com/p3l1/pangolin-gateway/issues/46)) ([1098668](https://github.com/p3l1/pangolin-gateway/commit/10986689e1cbfd313455564ddad0d24609b37da8))
+
 ## [0.11.0](https://github.com/p3l1/pangolin-gateway/compare/v0.10.0...v0.11.0) (2026-11-01)
 
 
