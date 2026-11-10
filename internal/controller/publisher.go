@@ -53,6 +53,8 @@ type Publisher struct {
 	// reporting a plain Accepted=True while nothing was published would make the
 	// rehearsal look like a successful rollout.
 	DryRun bool
+
+	pins appliedPins
 }
 
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes;gateways;gatewayclasses,verbs=get;list;watch
@@ -172,21 +174,28 @@ func (p *Publisher) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result,
 	privateResourcesRejected.Set(float64(countRejectedResources(result.PrivateResources)))
 	policiesRejected.Set(float64(countRejectedResources(result.Policies)))
 
-	publishErr := p.Pangolin.ApplyBlueprint(ctx, blueprint)
+	// Leaves out PIN-carrying entries unchanged since the last apply; the prune
+	// and the status use the whole blueprint.
+	sent := p.pins.unchangedOmitted(blueprint)
+	publishErr := p.Pangolin.ApplyBlueprint(ctx, sent)
 	if publishErr != nil {
 		publishTotal.WithLabelValues("error").Inc()
 		log.Error(publishErr, "applying blueprint",
-			"publicResources", len(blueprint.PublicResources),
-			"privateResources", len(blueprint.PrivateResources),
-			"policies", len(blueprint.PublicPolicies))
+			"publicResources", len(sent.PublicResources),
+			"privateResources", len(sent.PrivateResources),
+			"policies", len(sent.PublicPolicies))
 		markPublishFailed(verdicts, publishErr)
 	} else {
 		publishTotal.WithLabelValues("success").Inc()
 		log.V(1).Info("blueprint applied",
-			"publicResources", len(blueprint.PublicResources),
-			"privateResources", len(blueprint.PrivateResources))
+			"publicResources", len(sent.PublicResources),
+			"privateResources", len(sent.PrivateResources),
+			"unchangedPinEntries", len(blueprint.PublicResources)+len(blueprint.PublicPolicies)-
+				len(sent.PublicResources)-len(sent.PublicPolicies))
 		if p.DryRun {
 			markDryRun(verdicts)
+		} else {
+			p.pins.remember(blueprint)
 		}
 	}
 
@@ -288,7 +297,8 @@ func (p *Publisher) resyncInterval() time.Duration {
 func (p *Publisher) prune(ctx context.Context, desired pangolin.Blueprint) error {
 	errs := []error{
 		pruneSection(ctx, visibilityPublic, desired.PublicResources,
-			p.Pangolin.ListPublicResources, p.Pangolin.DeletePublicResource, false),
+			p.listing(visibilityPublic, p.Pangolin.ListPublicResources),
+			p.Pangolin.DeletePublicResource, false),
 		pruneSection(ctx, visibilityPrivate, desired.PrivateResources,
 			p.Pangolin.ListPrivateResources, p.Pangolin.DeletePrivateResource, false),
 	}
@@ -297,9 +307,25 @@ func (p *Publisher) prune(ctx context.Context, desired pangolin.Blueprint) error
 	// unlicensed organisation has no policy API to list.
 	if p.Licensed {
 		errs = append(errs, pruneSection(ctx, visibilityPolicy, desired.PublicPolicies,
-			p.Pangolin.ListResourcePolicies, p.Pangolin.DeleteResourcePolicy, true))
+			p.listing(visibilityPolicy, p.Pangolin.ListResourcePolicies),
+			p.Pangolin.DeleteResourcePolicy, true))
 	}
 	return errors.Join(errs...)
+}
+
+// listing wraps a prune listing so that a complete one also tells the PIN
+// memory which entries still exist in Pangolin.
+func (p *Publisher) listing(
+	visibility string,
+	list func(context.Context) ([]pangolin.Resource, error),
+) func(context.Context) ([]pangolin.Resource, error) {
+	return func(ctx context.Context) ([]pangolin.Resource, error) {
+		live, err := list(ctx)
+		if err == nil {
+			p.pins.retain(visibility, live)
+		}
+		return live, err
+	}
 }
 
 func pruneSection[T any](
