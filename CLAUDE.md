@@ -141,6 +141,9 @@ the docs:
   challenge while `sso-enabled` is true.
 - `auth.pincode` is a number from 100000 to 999999, hashed into its own table and cleared
   on every apply like basic auth. It works beside `sso-enabled`: either session passes.
+  Every apply also deletes the sessions a PIN issued (cascade on the PIN row), so a
+  PIN-carrying resource or policy is sent only when its JSON changed. Rationale:
+  `docs/sessions.md`.
 - `auth.mtls` is `{enabled, ca-certificates:[PEM…]}`, enforced at the TLS handshake and
   stacked AND over the app-layer auth. Sent on every apply (empty list + `enabled:false`
   clears it, like basic auth). **Open-source builds strip the field** — the schema is

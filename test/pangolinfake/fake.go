@@ -266,6 +266,14 @@ func (f *Fake) Seed(niceID string, r pangolin.PublicResource) int {
 	return f.put(niceID, r)
 }
 
+// Remove deletes a public resource as if someone had done so in the dashboard.
+func (f *Fake) Remove(niceID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.resources, niceID)
+	delete(f.ids, niceID)
+}
+
 // put assumes the lock is held.
 func (f *Fake) put(niceID string, r pangolin.PublicResource) int {
 	f.resources[niceID] = r

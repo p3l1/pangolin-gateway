@@ -383,6 +383,11 @@ fill it only when it has a code. Removing the annotation or emptying it removes 
 PIN on the next pass: Pangolin clears it on every apply before reading the
 document back.
 
+Because Pangolin ends every PIN session whenever it rewrites the PIN, the
+controller sends a PIN-protected resource only when it changed. Such a resource
+is not repaired from drift in Pangolin's dashboard; one deleted there is
+recreated. Rationale: [`docs/sessions.md`](docs/sessions.md).
+
 Pangolin accepts 100000 to 999999 and nothing else. A value outside that range, a
 leading zero included, is rejected on the route rather than sent, because an apply
 Pangolin refuses unpublishes every other route along with it.
