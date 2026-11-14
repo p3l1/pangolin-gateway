@@ -419,6 +419,36 @@ apply. A wildcard such as `*@example.com` is rejected here with a pointer to
 [Shared policies](#shared-policies-resourcepolicy): only a policy can hold one. A private
 route carrying the annotation is rejected too.
 
+## Maintenance page
+
+Pangolin can show its own maintenance card in place of a public resource instead of a bare
+502. It is a **licensed** feature, so the controller needs `--pangolin-licensed`
+(`pangolin.licensed: true` in the chart); without it a route carrying any of these
+annotations is rejected rather than published without its page.
+
+```yaml
+metadata:
+  annotations:
+    pangolin.p3l1.de/maintenance-mode: automatic        # or forced
+    pangolin.p3l1.de/maintenance-title: Kurze Pause
+    pangolin.p3l1.de/maintenance-message: >-
+      Bitte versuch es in ein paar Minuten noch einmal.
+    pangolin.p3l1.de/maintenance-estimated-time: ca. 10 Minuten   # optional
+```
+
+| Annotation | Meaning | Limit |
+|---|---|---|
+| `maintenance-mode` | `automatic`: shown while no target is healthy. `forced`: shown always | — |
+| `maintenance-title` | heading of the card, required with a mode | 255 characters |
+| `maintenance-message` | text of the card, required with a mode | 2000 characters |
+| `maintenance-estimated-time` | shown under "estimated completion" | 100 characters |
+
+`automatic` relies on the route's [healthcheck](#healthchecks): without one Pangolin never
+learns the backend is down. The mode is the switch: remove it and the page goes off on the
+next pass while title and message stay in place for next time. All values are plain text;
+Pangolin renders no HTML or Markdown. A private route carrying any of these annotations is
+rejected, since Pangolin shows the page for public resources only.
+
 ## Shared policies (`ResourcePolicy`)
 
 Shared resource policies are a **licensed** Pangolin feature (Enterprise or SaaS tier).
@@ -656,6 +686,7 @@ route, cross-namespace backends via ReferenceGrant, and listener/`allowedRoutes`
 | Basic auth asked for, credentials unavailable | `Accepted: False`, `UnsupportedValue` |
 | PIN that is not six digits from 100000 | `Accepted: False`, `UnsupportedValue` |
 | Malformed `email-whitelist`, or a wildcard in it | `Accepted: False`, `UnsupportedValue` |
+| Maintenance page while unlicensed, with an unknown mode, without title or message, or over length | `Accepted: False`, `UnsupportedValue` |
 | `policy` while unlicensed, unknown or unaccepted, on a private route, or beside an access annotation | `Accepted: False`, `UnsupportedValue` |
 | mTLS CA unreadable, absent, a private key, or over 20 | `Accepted: False`, `UnsupportedValue` |
 | mTLS CA did not take effect (non-Enterprise build, or missing action) | `Accepted: False`, `MtlsNotApplied` |

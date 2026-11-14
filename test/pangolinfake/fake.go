@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/p3l1/pangolin-gateway/internal/pangolin"
 )
@@ -274,6 +275,59 @@ func (f *Fake) Remove(niceID string) {
 	delete(f.ids, niceID)
 }
 
+// checkMaintenance mirrors the schema of a licensed build: an enum and three
+// length limits counted in characters.
+func checkMaintenance(m *pangolin.Maintenance) string {
+	if m == nil {
+		return ""
+	}
+	if m.Type != "" && m.Type != "forced" && m.Type != "automatic" {
+		return fmt.Sprintf("Invalid option: expected one of \"forced\"|\"automatic\" at maintenance.type, got %q", m.Type)
+	}
+	for field, limit := range map[string]struct {
+		value string
+		max   int
+	}{
+		"title":          {m.Title, 255},
+		"message":        {m.Message, 2000},
+		"estimated-time": {m.EstimatedTime, 100},
+	} {
+		if utf8.RuneCountInString(limit.value) > limit.max {
+			return fmt.Sprintf("Too big: expected string to have <=%d characters at maintenance.%s",
+				limit.max, field)
+		}
+	}
+	return ""
+}
+
+// mergeMaintenance stores what Pangolin would: nothing while unlicensed, and
+// otherwise each column the block names, keeping those it leaves out. It
+// assumes the lock is held.
+func (f *Fake) mergeMaintenance(niceID string, in *pangolin.Maintenance) *pangolin.Maintenance {
+	stored := f.resources[niceID].Maintenance
+	switch {
+	case !f.licensed:
+		return nil
+	case in == nil:
+		return stored
+	}
+	out := *in
+	if stored != nil {
+		for _, p := range []struct {
+			dst *string
+			old string
+		}{
+			{&out.Type, stored.Type}, {&out.Title, stored.Title},
+			{&out.Message, stored.Message}, {&out.EstimatedTime, stored.EstimatedTime},
+		} {
+			if *p.dst == "" {
+				*p.dst = p.old
+			}
+		}
+	}
+	return &out
+}
+
 // put assumes the lock is held.
 func (f *Fake) put(niceID string, r pangolin.PublicResource) int {
 	f.resources[niceID] = r
@@ -371,6 +425,13 @@ func (f *Fake) handleApply(w http.ResponseWriter, r *http.Request) {
 	// else, so the whole document is rejected rather than partially applied.
 	for _, key := range sortedKeys(bp.PublicResources) {
 		if msg := checkRules(bp.PublicResources[key].Rules); msg != "" {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("%s (resource %s)", msg, key))
+			return
+		}
+	}
+
+	for _, key := range sortedKeys(bp.PublicResources) {
+		if msg := checkMaintenance(bp.PublicResources[key].Maintenance); msg != "" {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("%s (resource %s)", msg, key))
 			return
 		}
@@ -511,6 +572,7 @@ func (f *Fake) handleApply(w http.ResponseWriter, r *http.Request) {
 	f.received = append(f.received, bp)
 	// Additive without prune: this is exactly the gap the controller exists to close.
 	for key, res := range bp.PublicResources {
+		res.Maintenance = f.mergeMaintenance(key, res.Maintenance)
 		f.put(key, res)
 	}
 	// Declarative replace: the stored set becomes exactly what was sent.

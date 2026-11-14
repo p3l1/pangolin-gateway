@@ -27,9 +27,9 @@ pangolin:
   apiKeySecret:
     name: ""
     key: apiKey
-  # The Pangolin organisation holds a licence for shared resource policies. Turns
-  # on ResourcePolicy objects and the pangolin.p3l1.de/policy annotation; off, the
-  # controller never calls the policy API and refuses both.
+  # The Pangolin organisation holds a licence. Turns on ResourcePolicy objects and
+  # the policy and maintenance-* annotations; off, the controller never calls the
+  # policy API and refuses all of them.
   licensed: false
   # Log every write instead of performing it.
   dryRun: false
