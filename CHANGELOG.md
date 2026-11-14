@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/p3l1/pangolin-gateway/compare/v0.11.1...v0.12.0) (2026-11-14)
+
+
+### Features
+
+* set Pangolin's maintenance page from route annotations ([#48](https://github.com/p3l1/pangolin-gateway/issues/48)) ([dccf8c4](https://github.com/p3l1/pangolin-gateway/commit/dccf8c4d24b295f85e06cfbad312874a1f7c09fc))
+
 ## [0.11.1](https://github.com/p3l1/pangolin-gateway/compare/v0.11.0...v0.11.1) (2026-11-10)
 
 
