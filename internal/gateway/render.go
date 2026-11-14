@@ -510,14 +510,20 @@ func publicResource(
 	}
 	target.Healthcheck = healthcheck
 
+	maintenance, err := maintenanceFor(r, in.Licensed)
+	if err != nil {
+		return nil, err
+	}
+
 	return &pangolin.PublicResource{
-		Name:       name,
-		Mode:       pangolin.ModeHTTP,
-		FullDomain: host,
-		Auth:       auth,
-		Policy:     policy,
-		Targets:    []pangolin.Target{target},
-		Rules:      rules,
+		Name:        name,
+		Mode:        pangolin.ModeHTTP,
+		FullDomain:  host,
+		Auth:        auth,
+		Policy:      policy,
+		Targets:     []pangolin.Target{target},
+		Rules:       rules,
+		Maintenance: maintenance,
 	}, nil
 }
 
@@ -604,6 +610,11 @@ func privateResource(
 	if err := refuseAnnotations(r, "a private route",
 		"a private resource has no targets to check",
 		healthcheckAnnotations...); err != nil {
+		return nil, nil, err
+	}
+	if err := refuseAnnotations(r, "a private route",
+		"Pangolin shows a maintenance page for public resources only",
+		maintenanceAnnotations...); err != nil {
 		return nil, nil, err
 	}
 

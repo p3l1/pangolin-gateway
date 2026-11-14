@@ -84,11 +84,25 @@ type PublicResource struct {
 	Policy  string   `json:"policy,omitempty"`
 	Targets []Target `json:"targets,omitempty"`
 
+	// Licensed. Pangolin leaves the stored page untouched when the block is
+	// absent, so a licensed controller sends it on every apply.
+	Maintenance *Maintenance `json:"maintenance,omitempty"`
+
 	// Never omitted. Pangolin switches rule evaluation on for a resource whose
 	// rules array is non-empty and off when it is empty, but leaves the setting
 	// untouched when the key is absent — so an absent key would keep evaluating
 	// the rules of a route whose last rule was just removed.
 	Rules Rules `json:"rules"`
+}
+
+// Maintenance is the page Pangolin shows instead of the resource: always for
+// type forced, only while no target is healthy for automatic. Plain text only.
+type Maintenance struct {
+	Enabled       bool   `json:"enabled"`
+	Type          string `json:"type,omitempty"`
+	Title         string `json:"title,omitempty"`
+	Message       string `json:"message,omitempty"`
+	EstimatedTime string `json:"estimated-time,omitempty"`
 }
 
 // Rule is one access rule. Pangolin's schema also takes priority and enabled;

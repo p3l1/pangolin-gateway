@@ -36,7 +36,8 @@ These are hard constraints, not preferences:
   `pangolin.p3l1.de/` annotations are declared where they are parsed: sso, site and
   display-name at the top of `render.go`, the healthcheck in `healthcheck.go`, access rules
   in `rules.go`, visibility and grants in `visibility.go`, basic auth in `basicauth.go`, the PIN in
-  `pincode.go`, the e-mail whitelist in `emailwhitelist.go`, mTLS CA sources in `mtls.go`.
+  `pincode.go`, the e-mail whitelist in `emailwhitelist.go`, mTLS CA sources in `mtls.go`, the maintenance
+  page in `maintenance.go`.
   Credentials are resolved before the render, by `internal/controller/basicauth.go`, and
   handed in through `Inputs.BasicAuth` so the renderer stays pure. `privateresource.go`
   translates a `PrivateResource`; `RenderAll` returns verdicts for both kinds, and both
@@ -160,6 +161,11 @@ the docs:
   names resolve fails the document, so both are checked against `listUsers`/`listClients`
   the way sites are. An absent `tcp-ports`/`udp-ports` means every port, so host and cidr
   always send both. Aliases are unique per organisation. Rationale: `docs/private-resources.md`.
+
+- `maintenance` (`enabled`, `type` forced|automatic, `title`, `message`, `estimated-time`) is
+  licensed and silently dropped without a licence; `automatic` shows Pangolin's card while no
+  target is healthy. An omitted block, like an omitted text column, keeps what is stored, so a
+  licensed controller sends `{enabled:false}` on every pass to switch it off.
 
 - `public-policies` is a licensed section: an unlicensed organisation fails the whole apply
   for it, and for a resource carrying `policy`. Pangolin never deletes a policy on apply, and
