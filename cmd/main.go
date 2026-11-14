@@ -36,7 +36,7 @@ func main() {
 		dryRun = flag.Bool("dry-run", false,
 			"log every write to Pangolin instead of performing it")
 		licensed = flag.Bool("pangolin-licensed", false,
-			"use licensed Pangolin features: ResourcePolicy objects and the policy annotation")
+			"use licensed Pangolin features: ResourcePolicy objects, the policy and maintenance annotations")
 		resync = flag.Duration("resync-interval", controller.DefaultResyncInterval,
 			"how often to reconcile without a cluster event, repairing drift on the Pangolin side")
 	)
