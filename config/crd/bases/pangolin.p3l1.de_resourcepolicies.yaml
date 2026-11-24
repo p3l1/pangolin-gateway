@@ -99,13 +99,15 @@ spec:
                       - pass
                       type: string
                     match:
-                      description: 'Match is what Value is compared against: path,
-                        cidr, ip, country, asn or region.'
+                      description: |-
+                        Match is what Value is compared against: path, cidr, ip, country,
+                        country_is_not, asn or region.
                       enum:
                       - path
                       - cidr
                       - ip
                       - country
+                      - country_is_not
                       - asn
                       - region
                       type: string

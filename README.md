@@ -278,13 +278,17 @@ and rejects a resource whose priorities collide, which a partly annotated list m
 trigger. There is no `enabled` field either — a rule that should not apply is deleted.
 Writing either is rejected rather than ignored.
 
-`match` takes `path`, `cidr`, `ip`, `country`, `asn` or `region`. A `path` value is a
+`match` takes `path`, `cidr`, `ip`, `country`, `country_is_not`, `asn` or `region`.
+`country_is_not` matches every address outside the given country, so a single
+`deny` rule at the top of the list restricts a resource to one country while path
+exceptions further down still apply. A `path` value is a
 whole-path glob: `/api/*` matches `/api` and `/api/a/b`, while `/script.js` matches only
 itself.
 
 The controller validates `path`, `cidr` and `ip` before sending them, because an apply is
 all or nothing — one bad value would unpublish every other route, not just the offending
-one. **`country`, `asn` and `region` cannot be checked this way**: they depend on MaxMind
+one. Country values must be two upper-case letters or `ALL`, which the controller checks
+too. **Whether `country`, `country_is_not`, `asn` and `region` work cannot be checked**: they depend on MaxMind
 databases configured inside the Pangolin instance, which no API reports, so a value that
 instance refuses will fail the whole apply. Every route then reports `PublishFailed` until
 the rule is corrected.

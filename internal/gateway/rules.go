@@ -111,16 +111,33 @@ func validRule(s ruleSpec) (pangolin.Rule, error) {
 					"%q, percent escapes and %q as a wildcard, and may not be empty",
 				value, "-._~!$&'()+,;=@:#", "*")
 		}
-	case pangolin.MatchCountry, pangolin.MatchASN, pangolin.MatchRegion:
+	case pangolin.MatchCountry, pangolin.MatchCountryIsNot:
+		// Pangolin's own format check; whether its MaxMind database is present
+		// stays invisible here, and a missing one still fails the whole apply.
+		if !validCountryCode(value) {
+			return pangolin.Rule{}, fmt.Errorf(
+				"value %q is not a country code: two upper-case letters such as %q, or %q",
+				value, "DE", "ALL")
+		}
+	case pangolin.MatchASN, pangolin.MatchRegion:
 		// Checked by Pangolin against MaxMind databases this controller cannot
 		// see. A value it rejects fails the whole apply; the README says so.
 	default:
-		return pangolin.Rule{}, fmt.Errorf("match %q is not one of %q, %q, %q, %q, %q, %q",
+		return pangolin.Rule{}, fmt.Errorf("match %q is not one of %q, %q, %q, %q, %q, %q, %q",
 			s.Match, pangolin.MatchPath, pangolin.MatchCIDR, pangolin.MatchIP,
-			pangolin.MatchCountry, pangolin.MatchASN, pangolin.MatchRegion)
+			pangolin.MatchCountry, pangolin.MatchCountryIsNot, pangolin.MatchASN,
+			pangolin.MatchRegion)
 	}
 
 	return pangolin.Rule{Action: s.Action, Match: s.Match, Value: value}, nil
+}
+
+// validCountryCode mirrors Pangolin's check: ^[A-Z]{2}$ or ALL.
+func validCountryCode(v string) bool {
+	if v == "ALL" {
+		return true
+	}
+	return len(v) == 2 && v[0] >= 'A' && v[0] <= 'Z' && v[1] >= 'A' && v[1] <= 'Z'
 }
 
 // validPathGlob mirrors Pangolin's own glob validator. It is deliberately

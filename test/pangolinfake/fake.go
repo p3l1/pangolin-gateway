@@ -1229,7 +1229,7 @@ func checkRules(rules pangolin.Rules) string {
 			if !validPathGlob(rule.Value) {
 				return "Invalid URL glob pattern: " + rule.Value
 			}
-		case pangolin.MatchCountry, pangolin.MatchASN, pangolin.MatchRegion:
+		case pangolin.MatchCountry, pangolin.MatchCountryIsNot, pangolin.MatchASN, pangolin.MatchRegion:
 			// A real instance checks these against MaxMind databases it may not
 			// have, which no API reports. The fake accepts them, as an instance
 			// with the databases in place would.

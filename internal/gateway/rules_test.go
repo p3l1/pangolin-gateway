@@ -249,10 +249,11 @@ func TestRenderAcceptsWellFormedPathGlobs(t *testing.T) {
 // rejects fails the whole apply, which the README says out loud.
 func TestRenderPassesGeographicMatchesThrough(t *testing.T) {
 	for name, rule := range map[string]string{
-		"country": "country|DE",
-		"asn":     "asn|AS64496",
-		"region":  "region|150",
-		"all":     "country|ALL",
+		"country":        "country|DE",
+		"country is not": "country_is_not|DE",
+		"asn":            "asn|AS64496",
+		"region":         "region|150",
+		"all":            "country|ALL",
 	} {
 		t.Run(name, func(t *testing.T) {
 			match, value, _ := strings.Cut(rule, "|")
@@ -267,6 +268,32 @@ func TestRenderPassesGeographicMatchesThrough(t *testing.T) {
 			}
 			if len(entry.Rules) != 1 || entry.Rules[0].Value != value {
 				t.Errorf("rules = %+v, want the value passed through verbatim", entry.Rules)
+			}
+		})
+	}
+}
+
+// Pangolin accepts a country only as two upper-case letters or ALL and fails the
+// whole apply otherwise, so a malformed code is refused for this route alone.
+func TestRenderRejectsAMalformedCountryCode(t *testing.T) {
+	for name, rule := range map[string]string{
+		"lower case":    "country|de",
+		"name":          "country|Germany",
+		"three letters": "country_is_not|DEU",
+		"is not, lower": "country_is_not|de",
+	} {
+		t.Run(name, func(t *testing.T) {
+			match, value, _ := strings.Cut(rule, "|")
+			r := route("demo", "web", withAccessRules(
+				"- action: deny\n  match: "+match+"\n  value: "+value+"\n"))
+
+			bp, verdicts := Render(defaultInputs(r))
+
+			if _, published := bp.PublicResources["gw-demo-web"]; published {
+				t.Fatalf("country value %q was published", value)
+			}
+			if msg := verdictFor(t, verdicts, "demo", "web").Accepted.Message; !strings.Contains(msg, value) {
+				t.Errorf("message %q does not name the value %q", msg, value)
 			}
 		})
 	}
