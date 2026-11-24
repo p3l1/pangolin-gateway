@@ -12,8 +12,9 @@ type PolicyRule struct {
 	// +kubebuilder:validation:Enum=allow;deny;pass
 	Action string `json:"action"`
 
-	// Match is what Value is compared against: path, cidr, ip, country, asn or region.
-	// +kubebuilder:validation:Enum=path;cidr;ip;country;asn;region
+	// Match is what Value is compared against: path, cidr, ip, country,
+	// country_is_not, asn or region.
+	// +kubebuilder:validation:Enum=path;cidr;ip;country;country_is_not;asn;region
 	Match string `json:"match"`
 
 	// +kubebuilder:validation:MinLength=1

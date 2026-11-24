@@ -47,12 +47,13 @@ const (
 
 // Rule match types. Rationale: docs/access-rules.md.
 const (
-	MatchCIDR    = "cidr"
-	MatchPath    = "path"
-	MatchIP      = "ip"
-	MatchCountry = "country"
-	MatchASN     = "asn"
-	MatchRegion  = "region"
+	MatchCIDR         = "cidr"
+	MatchPath         = "path"
+	MatchIP           = "ip"
+	MatchCountry      = "country"
+	MatchCountryIsNot = "country_is_not"
+	MatchASN          = "asn"
+	MatchRegion       = "region"
 )
 
 // Blueprint is the desired-state document sent to the Integration API. Only the

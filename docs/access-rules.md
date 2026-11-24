@@ -63,13 +63,20 @@ included. The renderer checks those three itself and refuses the single route,
 which is the same pattern it already applies to duplicate `full-domain` values
 and unknown sites.
 
-`country`, `asn` and `region` cannot be checked this way. They depend on MaxMind
+`country`, `country_is_not`, `asn` and `region` cannot be checked this way. They depend on MaxMind
 databases configured inside the Pangolin instance (`server.maxmind_db_path`,
 `server.maxmind_asn_path`), and no API reports whether those are present — a
 well-formed `country` rule still fails validation on an instance without the
 database. Those three match types are passed through unchecked, and a value
 Pangolin refuses takes the whole apply down with it. The README says so at the
 point of use.
+
+## `country_is_not` and unknown addresses
+
+`country_is_not` (Pangolin 1.27) matches when the address is not in the given
+country. An address MaxMind cannot place has no country and therefore matches,
+so `deny country_is_not DE` refuses it. `ALL` skips private and CGNAT addresses;
+a concrete country code does not.
 
 ## Rule evaluation is switched on by the rules array
 
