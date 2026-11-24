@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/p3l1/pangolin-gateway/compare/v0.12.0...v0.13.0) (2026-11-24)
+
+
+### Features
+
+* accept country_is_not access rules and check country codes ([#50](https://github.com/p3l1/pangolin-gateway/issues/50)) ([2193dfd](https://github.com/p3l1/pangolin-gateway/commit/2193dfd05f94c0ebf9a0c183926d1b99f8359db8))
+
 ## [0.12.0](https://github.com/p3l1/pangolin-gateway/compare/v0.11.1...v0.12.0) (2026-11-14)
 
 
